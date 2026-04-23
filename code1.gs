@@ -12,7 +12,7 @@
  *      Row 2 = column headers with icon glyphs
  *      Row 3+ = data rows (no cover images, normal ~32px rows)
  *  - Keeps every utility sheet hidden (Challenges, Shelves, Profile, Audiobooks)
- *  - Seeds 26 demo books automatically on first open
+ *  - Seeds 72 demo books automatically on first open
  *  - Exposes the full client* API surface used by index.html / index2.html / index3.html
  *
  *  DEPLOY:
@@ -24,6 +24,21 @@
  * ===================================================================== */
 
 function _dbLiteInitializeSheets() {
+	// Migrate old default theme: 'blossom' (pink) → 'romantic' (red) the first time we run.
+	// Users who explicitly picked blossom later will stay on blossom.
+	var props = PropertiesService.getScriptProperties();
+	if (props.getProperty('DEFAULT_THEME_MIGRATED_V2') !== '1') {
+		try {
+			var pSheet = _ss().getSheetByName(SHEET_PROFILE);
+			if (pSheet && pSheet.getLastRow() >= 2) {
+				var tCol = PROFILE_HEADERS.indexOf('Theme') + 1;
+				var cur = String(pSheet.getRange(2, tCol).getValue() || '').toLowerCase();
+				if (!cur || cur === 'blossom') pSheet.getRange(2, tCol).setValue('romantic');
+			}
+		} catch(e) {}
+		props.setProperty('DEFAULT_THEME_MIGRATED_V2', '1');
+	}
+
 	var theme = _getCurrentTheme();
 	var ss = _ss();
 
@@ -36,12 +51,50 @@ function _dbLiteInitializeSheets() {
 
 	_dbLiteEnsureProfileDefaults(profile);
 	_dbLiteInitLibrarySheet(library, theme);
-	_dbLiteInitMyYearSheet(ss, theme);
 
-	// Seed demo on first run only (also runs unconditionally on first open via onOpen).
+	// Style hidden data tabs with the theme palette header so they look intentional if unhidden.
+	[
+		{ name: SHEET_CHALLENGES, headers: CHALLENGE_HEADERS, label: 'Challenges' },
+		{ name: SHEET_SHELVES,    headers: SHELF_HEADERS,     label: 'Shelves'    },
+		{ name: SHEET_PROFILE,    headers: PROFILE_HEADERS,   label: 'Profile'    },
+		{ name: SHEET_AUDIOBOOKS, headers: AUDIOBOOK_HEADERS, label: 'Audiobooks' }
+	].forEach(function(d) {
+		var s = ss.getSheetByName(d.name);
+		if (s) _dbLiteStyleHiddenHeader(s, d.headers, d.label, theme);
+	});
+
+	// Seed demo BEFORE My Year so the cover grid has books to display.
 	_seedDemoData();
 
+	_dbLiteInitMyYearSheet(ss, theme);
 	_dbLiteArrangeTabs(ss);
+}
+
+function _dbLiteStyleHiddenHeader(sheet, headers, label, themeName) {
+	if (!sheet) return;
+	var t = _dbLiteTheme(themeName);
+	var display = _displayHeaders ? _displayHeaders(headers) : headers;
+	var cols = display.length;
+	try { _ensureColumns(sheet, cols); } catch(e) {}
+	// Row 1 = themed palette banner with tab label right-aligned.
+	try { sheet.getRange(1, 1, 1, cols).breakApart(); } catch(e) {}
+	sheet.getRange(1, 1, 1, cols).merge()
+		.setValue(String(label || sheet.getName()).toUpperCase() + '  _')
+		.setBackground(t.headerBg).setFontColor(t.headerText || '#FFFFFF')
+		.setFontFamily('Montserrat').setFontSize(22).setFontWeight('bold')
+		.setHorizontalAlignment('right').setVerticalAlignment('middle');
+	sheet.setRowHeight(1, 48);
+	// Row 2 = field headers on white, bold with themed bottom border.
+	sheet.getRange(2, 1, 1, cols).setValues([display])
+		.setBackground('#FFFFFF').setFontColor('#0F172A')
+		.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold')
+		.setHorizontalAlignment('left').setVerticalAlignment('middle');
+	sheet.setRowHeight(2, 32);
+	sheet.getRange(2, 1, 1, cols)
+		.setBorder(null, null, true, null, null, null, t.accent, SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+	try { sheet.setFrozenRows(2); } catch(e) {}
+	sheet.setTabColor(t.accent);
+	sheet.setHiddenGridlines(true);
 }
 
 function _dbLiteTheme(themeName) {
@@ -81,7 +134,7 @@ function _dbLiteEnsureProfileDefaults(sheet) {
 			case 'Name': return '';
 			case 'Motto': return 'A focused place to track every book';
 			case 'PhotoData': return '';
-			case 'Theme': return 'blossom';
+			case 'Theme': return 'romantic';
 			case 'YearlyGoal': return 50;
 			case 'Onboarded': return false;
 			case 'DemoCleared': return false;
@@ -153,12 +206,61 @@ function _dbLiteInitLibrarySheet(sheet, themeName) {
 	sheet.setTabColor(t.accent);
 	sheet.setHiddenGridlines(true);
 
-	// ── Rows 1–6: banner background = theme primary color ──────────────────
-	// User manually places a floating image on top; code only sets the color.
-	// Row 7 stays white as a spacer before the row-8 header band.
-	try {
-		sheet.getRange(1, 1, 6, totalCols).setBackground(t.headerBg);
-	} catch (e) {}
+	// ── Rows 1–8: banner layout ───────────────────────────────────────────
+	// 52pt Montserrat cap+descender needs ~80px. Rows 2+3 merged = 84px.
+	// Row 1/6 = 14px padding. Row 7 = 8px separator. Row 8 = 48px header.
+	sheet.setRowHeight(1, 14);
+	sheet.setRowHeights(2, 2, 42);
+	sheet.setRowHeights(4, 2, 42);
+	sheet.setRowHeight(6, 14);
+	sheet.setRowHeight(7, 8);
+	sheet.setRowHeight(8, 48);
+
+	// Rows 1–6: themed background (floating cat image sits on top in cols B–F)
+	sheet.getRange(1, 1, 6, totalCols).setBackground(t.headerBg);
+
+	// Rows 2–3, cols G–L (7–12): "Reading _" — 52px normal white, right-aligned
+	try { sheet.getRange(2, 7, 2, 6).merge(); } catch(e) {}
+	sheet.getRange(2, 7, 2, 6)
+		.setValue('Reading _')
+		.setFontFamily('Montserrat').setFontSize(52).setFontWeight('normal')
+		.setFontColor('#FFFFFF').setBackground(t.headerBg)
+		.setHorizontalAlignment('right').setVerticalAlignment('bottom');
+
+	// Rows 4–5, cols G–L (7–12): "LIBRARY _" — 52px bold white, right-aligned
+	try { sheet.getRange(4, 7, 2, 6).merge(); } catch(e) {}
+	sheet.getRange(4, 7, 2, 6)
+		.setValue('LIBRARY _')
+		.setFontFamily('Montserrat').setFontSize(52).setFontWeight('bold')
+		.setFontColor('#FFFFFF').setBackground(t.headerBg)
+		.setHorizontalAlignment('right').setVerticalAlignment('top');
+
+	// Rows 7–8: header strip on white (matches data area).
+	var HDR_BG = '#FFFFFF';
+	sheet.getRange(7, 1, 2, totalCols).setBackground(HDR_BG);
+
+	// Row 8: column header labels — 12pt bold, centered. Dates stack via \n + wrap.
+	var hdrLabels = [''];  // col A = blank (row-number column)
+	LIBRARY_HEADERS.slice(0, LIBRARY_VISIBLE_COUNT).forEach(function(h) {
+		var label = (DISPLAY_MAP[h] || h).toUpperCase();
+		// Only stack the two date columns (they share limited horizontal space).
+		if (h === 'DateStarted') label = 'DATE\nSTARTED';
+		else if (h === 'DateFinished') label = 'DATE\nFINISHED';
+		hdrLabels.push(label);
+	});
+	sheet.getRange(LIBRARY_HEADER_ROW, 1, 1, hdrLabels.length)
+		.setValues([hdrLabels])
+		.setBackground(HDR_BG).setFontColor('#1E293B').setFontWeight('bold')
+		.setFontFamily('Montserrat').setFontSize(12)
+		.setVerticalAlignment('middle').setHorizontalAlignment('center')
+		.setWrap(false);
+	// Only date columns get wrap enabled (so the \n renders as two lines).
+	var dsColH = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('DateStarted');
+	var dfColH = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('DateFinished');
+	sheet.getRange(LIBRARY_HEADER_ROW, dsColH, 1, 1).setWrap(true).setVerticalAlignment('middle').setHorizontalAlignment('center');
+	sheet.getRange(LIBRARY_HEADER_ROW, dfColH, 1, 1).setWrap(true).setVerticalAlignment('middle').setHorizontalAlignment('center');
+	sheet.getRange(LIBRARY_HEADER_ROW, LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Title'),  1, 1).setHorizontalAlignment('left');
+	sheet.getRange(LIBRARY_HEADER_ROW, LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Author'), 1, 1).setHorizontalAlignment('left');
 
 	// ── Column A: auto row-number formula (=1,2,3... fills as books are added) ──
 	sheet.setColumnWidth(1, 40);
@@ -173,8 +275,9 @@ function _dbLiteInitLibrarySheet(sheet, themeName) {
 		.setFontColor('#9CA3AF').setHorizontalAlignment('center')
 		.setVerticalAlignment('middle').setNumberFormat('#');
 
-	// ── Visible column widths (B–M: Title through Favorite) ─────────────────
-	var visibleWidths = [270, 190, 130, 140, 110, 120, 80, 115, 120, 160, 70, 90];
+	// ── Visible column widths (B–K: Title through Favorite) ─────────────────
+	// Order: Title, Author, Status(wider), Genre, Rating, Format, Pages, DateStarted, DateFinished, Favorite
+	var visibleWidths = [260, 180, 130, 150, 140, 130, 120, 90, 115, 115, 80];
 	for (var vi = 0; vi < LIBRARY_VISIBLE_COUNT; vi++) {
 		sheet.setColumnWidth(LIBRARY_DATA_COL + vi, visibleWidths[vi] || 120);
 	}
@@ -191,6 +294,19 @@ function _dbLiteInitLibrarySheet(sheet, themeName) {
 		.setFontColor('#1F2937').setVerticalAlignment('middle')
 		.setBackground('#FFFFFF').setWrap(false);
 
+	// Rating column — larger gold stars (base style; conditional formats reinforce)
+	var ratingColBase = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Rating');
+	sheet.getRange(LIBRARY_DATA_ROW, ratingColBase, 5000, 1)
+		.setFontFamily('Montserrat').setFontSize(16).setFontWeight('bold')
+		.setFontColor('#F59E0B').setHorizontalAlignment('center')
+		.setVerticalAlignment('middle');
+
+	// Favorite column — larger red heart
+	var favColBase = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Favorite');
+	sheet.getRange(LIBRARY_DATA_ROW, favColBase, 5000, 1)
+		.setFontSize(16).setFontWeight('bold').setFontColor('#DC2626')
+		.setHorizontalAlignment('center');
+
 	// ── Row heights (all 5000 data rows at once) ──────────────────────────────
 	sheet.setRowHeights(LIBRARY_DATA_ROW, 5000, 44);
 
@@ -200,15 +316,12 @@ function _dbLiteInitLibrarySheet(sheet, themeName) {
 	var pagesCol  = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Pages');
 	var dsCol     = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('DateStarted');
 	var dfCol     = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('DateFinished');
-	var snCol     = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('SeriesNumber');
-	var favCol    = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Favorite');
 
 	sheet.getRange(LIBRARY_DATA_ROW, titleCol,  5000, 1).setFontWeight('bold').setHorizontalAlignment('left');
 	sheet.getRange(LIBRARY_DATA_ROW, authorCol, 5000, 1).setHorizontalAlignment('left');
 	sheet.getRange(LIBRARY_DATA_ROW, pagesCol,  5000, 1).setNumberFormat('#,##0').setHorizontalAlignment('center');
 	sheet.getRange(LIBRARY_DATA_ROW, dsCol,     5000, 1).setNumberFormat('mmm d, yyyy').setHorizontalAlignment('center');
 	sheet.getRange(LIBRARY_DATA_ROW, dfCol,     5000, 1).setNumberFormat('mmm d, yyyy').setHorizontalAlignment('center');
-	sheet.getRange(LIBRARY_DATA_ROW, snCol,     5000, 1).setHorizontalAlignment('center');
 
 	// Center-align chip columns
 	['Status','Genre','Rating','Format'].forEach(function(h) {
@@ -216,19 +329,19 @@ function _dbLiteInitLibrarySheet(sheet, themeName) {
 		sheet.getRange(LIBRARY_DATA_ROW, col, 5000, 1).setHorizontalAlignment('center');
 	});
 
-	// ── Hairline bottom border on every data row ──────────────────────────────
+	// ── Notebook-style ruled paper (full width, no vertical lines) ─────────
+	var NB  = '#A4C2F4';
+	var NBS = SpreadsheetApp.BorderStyle.SOLID;
+	// One call across all columns: vertical=false removes grid lines, horizontal=true adds ruled lines
 	sheet.getRange(LIBRARY_DATA_ROW, 1, 5000, totalCols)
-		.setBorder(null, null, true, null, null, null, '#E5E7EB', SpreadsheetApp.BorderStyle.SOLID);
+		.setBorder(null, null, true, null, false, true, NB, NBS);
+	// Red margin line on the left edge of col B
+	sheet.getRange(LIBRARY_DATA_ROW, 2, 5000, 1)
+		.setBorder(null, true, null, null, null, null, '#FF4C4C', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
 
-	// ── Freeze template header row + filter on visible columns ───────────────
+	// ── Freeze template header row (no filter — it adds an unwanted dark outline) ─
 	sheet.setFrozenRows(LIBRARY_HEADER_ROW);
 	sheet.setFrozenColumns(0);
-	try {
-		sheet.getRange(LIBRARY_HEADER_ROW, LIBRARY_DATA_COL, 5001, LIBRARY_VISIBLE_COUNT).createFilter();
-	} catch(e) {}
-
-	// ── Favorite checkboxes ───────────────────────────────────────────────────
-	sheet.getRange(LIBRARY_DATA_ROW, favCol, 5000, 1).insertCheckboxes();
 
 	// ── Chip dropdowns + colored pill conditional formatting ─────────────────
 	_dbLiteApplyValidations(sheet);
@@ -246,144 +359,620 @@ function _dbLiteInitMyYearSheet(ss, themeName) {
 	try { sheet.clearConditionalFormatRules(); } catch(e) {}
 	try { sheet.getBandings().forEach(function(b) { b.remove(); }); } catch(e) {}
 
-	var COVERS_PER_ROW = 6;
-	var COVER_W = 90;
-	var COVER_H = 135;
-	var NUM_COLS = 7; // col A: labels, cols B-G: covers
+	// Keep My Year width consistent with Library: exactly 12 visible columns (A-L).
+	// Library total: 40 + 260+180+130+150+140+130+120+90+115+115+80 = ~1550 px.
+	// Match here with 12 columns × 126 = 1512 px so the tab is visually the same width.
+	var NUM_COLS = 12;
+	var COV_START = 1;
+	var COV_PER_ROW = 12;
+	var COVER_W = 148;
+	var COVER_H = 218;
+	var HELPER_ROW = 1800;
+	var HELPER_ROWS = 400;
+
 	_ensureColumns(sheet, NUM_COLS);
-	_ensureRows(sheet, 2000);
+	_ensureRows(sheet, 2200);
 	sheet.setHiddenGridlines(true);
 	sheet.setTabColor(t.accent);
-	sheet.setColumnWidth(1, 120);
-	for (var c = 2; c <= NUM_COLS; c++) sheet.setColumnWidth(c, COVER_W);
 
-	var row = 1;
+	for (var c = 1; c <= NUM_COLS; c++) sheet.setColumnWidth(c, COVER_W);
 
-	// ── Banner ────────────────────────────────────────────────────────────
-	sheet.getRange(row, 1, 1, NUM_COLS).merge()
-		.setValue('📚  MY YEAR')
-		.setBackground(t.headerBg).setFontColor(t.headerText)
-		.setFontFamily('Montserrat').setFontSize(24).setFontWeight('bold')
-		.setHorizontalAlignment('center').setVerticalAlignment('middle');
-	sheet.setRowHeight(row, 72);
-	row++;
+	// Remove old charts so we can rebuild cleanly every run.
+	try {
+		sheet.getCharts().forEach(function(ch) { sheet.removeChart(ch); });
+	} catch(e) {}
 
-	// ── Challenges ────────────────────────────────────────────────────────
-	var chalSheet = ss.getSheetByName(SHEET_CHALLENGES);
-	var challenges = chalSheet ? _sheetToObjects(chalSheet, CHALLENGE_HEADERS) : [];
+	var MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+	var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+	var thisYear = new Date().getFullYear();
+	var thisMonth = new Date().getMonth();
 
-	if (challenges.length) {
-		sheet.getRange(row, 1, 1, NUM_COLS).merge()
-			.setValue('🎯  READING CHALLENGES')
-			.setBackground(t.accent2 || '#F3F4F6').setFontColor(t.headerBg)
-			.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold')
-			.setHorizontalAlignment('left').setVerticalAlignment('middle')
-			.setBorder(null, null, true, null, null, null, '#E5E7EB', SpreadsheetApp.BorderStyle.SOLID);
-		sheet.setRowHeight(row, 32);
-		row++;
-
-		challenges.forEach(function(ch) {
-			var current = Number(ch.Current) || 0;
-			var target  = Math.max(1, Number(ch.Target) || 1);
-			var pct     = Math.min(1, current / target);
-			var filled  = Math.round(pct * 20);
-			var bar     = new Array(filled + 1).join('█') + new Array(20 - filled + 1).join('░');
-			sheet.getRange(row, 1)
-				.setValue(String(ch.Icon || '📖').slice(0, 4) + '  ' + String(ch.Name || ''))
-				.setFontFamily('Montserrat').setFontSize(10).setFontWeight('bold')
-				.setFontColor('#1F2937').setVerticalAlignment('middle');
-			sheet.getRange(row, 2, 1, 3).merge()
-				.setValue(bar).setFontColor(t.headerBg).setFontSize(9).setVerticalAlignment('middle');
-			sheet.getRange(row, 5)
-				.setValue(current + ' / ' + target)
-				.setFontFamily('Montserrat').setFontSize(10).setFontColor('#4B5563')
-				.setHorizontalAlignment('center').setVerticalAlignment('middle');
-			sheet.getRange(row, 6)
-				.setValue(Math.round(pct * 100) + '%')
-				.setFontFamily('Montserrat').setFontSize(10).setFontWeight('bold')
-				.setFontColor(t.headerBg).setHorizontalAlignment('center').setVerticalAlignment('middle');
-			sheet.getRange(row, 1, 1, NUM_COLS)
-				.setBorder(null, null, true, null, null, null, '#E5E7EB', SpreadsheetApp.BorderStyle.SOLID);
-			sheet.setRowHeight(row, 36);
-			row++;
-		});
-	}
-
-	// Gap
-	sheet.setRowHeight(row, 24);
-	row++;
-
-	// ── Book Covers header ─────────────────────────────────────────────────
-	sheet.getRange(row, 1, 1, NUM_COLS).merge()
-		.setValue('📖  BOOK COVERS')
-		.setBackground(t.accent2 || '#F3F4F6').setFontColor(t.headerBg)
-		.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold')
-		.setHorizontalAlignment('left').setVerticalAlignment('middle')
-		.setBorder(null, null, true, null, null, null, '#E5E7EB', SpreadsheetApp.BorderStyle.SOLID);
-	sheet.setRowHeight(row, 32);
-	row++;
-
-	// ── Read finished books with cover URLs from Library ──────────────────
 	var libSheet = ss.getSheetByName(SHEET_LIBRARY);
-	var byMonth  = {};
-	var monthOrder = [];
+	var allBooks = [];
 	if (libSheet && libSheet.getLastRow() >= LIBRARY_DATA_ROW) {
 		var numDR = libSheet.getLastRow() - LIBRARY_DATA_ROW + 1;
-		var libData = libSheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL, numDR, LIBRARY_HEADERS.length).getValues();
-		var tIdx   = LIBRARY_HEADERS.indexOf('Title');
-		var cuIdx  = LIBRARY_HEADERS.indexOf('CoverUrl');
-		var dfIdx  = LIBRARY_HEADERS.indexOf('DateFinished');
-		var MN     = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-		libData.forEach(function(dr) {
-			if (!String(dr[tIdx] || '').trim()) return;
-			var url = String(dr[cuIdx] || '').trim();
-			if (!url || url.indexOf('http') !== 0) return;
-			var df = dr[dfIdx];
-			if (!df) return;
-			var d = new Date(df);
-			if (isNaN(d.getTime())) return;
-			var key   = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0');
-			var label = MN[d.getMonth()] + ' ' + d.getFullYear();
-			if (!byMonth[key]) { byMonth[key] = { label: label, covers: [] }; monthOrder.push(key); }
-			byMonth[key].covers.push(url.replace(/["']/g, ''));
+		var vals = libSheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL, numDR, LIBRARY_HEADERS.length).getValues();
+		var tIdx = LIBRARY_HEADERS.indexOf('Title');
+		var stIdx = LIBRARY_HEADERS.indexOf('Status');
+		var gIdx = LIBRARY_HEADERS.indexOf('Genre');
+		var pgIdx = LIBRARY_HEADERS.indexOf('Pages');
+		var cpIdx = LIBRARY_HEADERS.indexOf('CurrentPage');
+		var rtIdx = LIBRARY_HEADERS.indexOf('Rating');
+		var cuIdx = LIBRARY_HEADERS.indexOf('CoverUrl');
+		var dsIdx = LIBRARY_HEADERS.indexOf('DateStarted');
+		var dfIdx = LIBRARY_HEADERS.indexOf('DateFinished');
+		var isIdx = LIBRARY_HEADERS.indexOf('ISBN');
+		var auIdx = LIBRARY_HEADERS.indexOf('Author');
+		var serIdx = LIBRARY_HEADERS.indexOf('Series');
+
+		vals.forEach(function(r) {
+			if (!String(r[tIdx] || '').trim()) return;
+			var status = String(r[stIdx] || '').toLowerCase();
+			var ratingStr = String(r[rtIdx] || '');
+			allBooks.push({
+				title: String(r[tIdx] || ''),
+				author: String(r[auIdx] || ''),
+				series: String(r[serIdx] || ''),
+				status: status,
+				genre: String(r[gIdx] || ''),
+				pages: Number(r[pgIdx]) || 0,
+				currentPage: Number(r[cpIdx]) || 0,
+				rating: (ratingStr.match(/★/g) || []).length,
+				coverUrl: String(r[cuIdx] || '').trim(),
+				isbn: String(r[isIdx] || '').replace(/["'\s]/g, ''),
+				dateStarted: r[dsIdx],
+				dateFinished: r[dfIdx]
+			});
 		});
-		monthOrder.sort();
 	}
 
-	if (!monthOrder.length) {
-		sheet.getRange(row, 1, 1, NUM_COLS).merge()
-			.setValue('No finished books with covers yet — add a book in the web app, mark it finished, then sync.')
-			.setFontFamily('Montserrat').setFontSize(10).setFontColor('#9CA3AF')
+	var finished = allBooks.filter(function(b) { return b.status === 'finished'; });
+	var finishedThisYear = finished.filter(function(b) {
+		if (!b.dateFinished) return false;
+		var d = new Date(b.dateFinished);
+		return !isNaN(d.getTime()) && d.getFullYear() === thisYear;
+	});
+	var thisMonthCount = finished.filter(function(b) {
+		if (!b.dateFinished) return false;
+		var d = new Date(b.dateFinished);
+		return !isNaN(d.getTime()) && d.getFullYear() === thisYear && d.getMonth() === thisMonth;
+	}).length;
+
+	var totalPages = allBooks.reduce(function(s, b) {
+		if (b.status === 'finished') return s + (b.pages || 0);
+		if (b.status === 'reading' || b.status === 'dnf') return s + (b.currentPage || 0);
+		return s;
+	}, 0);
+
+	var ratedBooks = allBooks.filter(function(b) { return b.rating > 0; });
+	var avgRating = ratedBooks.length
+		? (ratedBooks.reduce(function(s, b) { return s + b.rating; }, 0) / ratedBooks.length).toFixed(1)
+		: '0';
+
+	// Reading streak (consecutive days with finished books)
+	var finishedDateSet = {};
+	finished.forEach(function(b) {
+		if (!b.dateFinished) return;
+		var key = String(b.dateFinished).slice(0, 10);
+		finishedDateSet[key] = true;
+	});
+	var streak = 0;
+	var cur = new Date();
+	if (!finishedDateSet[cur.toISOString().slice(0, 10)]) {
+		cur.setDate(cur.getDate() - 1);
+	}
+	while (finishedDateSet[cur.toISOString().slice(0, 10)]) {
+		streak++;
+		cur.setDate(cur.getDate() - 1);
+	}
+
+	// Yearly goal
+	var profileSheet = ss.getSheetByName(SHEET_PROFILE);
+	var yearlyGoal = 50;
+	if (profileSheet && profileSheet.getLastRow() >= 2) {
+		var goalColIdx = PROFILE_HEADERS.indexOf('YearlyGoal') + 1;
+		yearlyGoal = Number(profileSheet.getRange(2, goalColIdx).getValue()) || 50;
+	}
+	var goalDone = finishedThisYear.length;
+	var goalPct = Math.min(100, Math.round(goalDone / Math.max(1, yearlyGoal) * 100));
+	var goalBar = new Array(Math.round(goalPct / 7) + 1).join('█') + new Array(15 - Math.round(goalPct / 7) + 1).join('░');
+
+	// Aggregate counts for charts
+	var genreCounts = {};
+	allBooks.forEach(function(b) {
+		var g = String(b.genre || 'Other').trim() || 'Other';
+		genreCounts[g] = (genreCounts[g] || 0) + 1;
+	});
+
+	var statusCounts = {
+		Reading: allBooks.filter(function(b) { return b.status === 'reading'; }).length,
+		Finished: allBooks.filter(function(b) { return b.status === 'finished'; }).length,
+		'Want to Read': allBooks.filter(function(b) { return b.status === 'want to read' || b.status === 'want-to-read'; }).length,
+		DNF: allBooks.filter(function(b) { return b.status === 'dnf'; }).length
+	};
+
+	var monthlyBooks = [];
+	for (var m = 0; m < 12; m++) {
+		var ct = 0;
+		finishedThisYear.forEach(function(b) {
+			var d = new Date(b.dateFinished);
+			if (!isNaN(d.getTime()) && d.getMonth() === m) ct++;
+		});
+		monthlyBooks.push(ct);
+	}
+	var monthlyGoal = Math.max(1, Math.round(yearlyGoal / 12));
+
+	var weeklyBooks = [0,0,0,0,0,0,0];
+	var today = new Date();
+	var weekStart = new Date(today);
+	weekStart.setDate(today.getDate() - today.getDay());
+	finished.forEach(function(b) {
+		if (!b.dateFinished) return;
+		var d = new Date(b.dateFinished);
+		if (isNaN(d.getTime())) return;
+		var diff = Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate())) / 86400000);
+		if (diff >= 0 && diff < 7) weeklyBooks[diff]++;
+	});
+
+	var topGenre = '—';
+	var topGenreCount = 0;
+	Object.keys(genreCounts).forEach(function(g) {
+		if (genreCounts[g] > topGenreCount) { topGenre = g; topGenreCount = genreCounts[g]; }
+	});
+
+	var daysArr = finished.reduce(function(arr, b) {
+		if (b.dateStarted && b.dateFinished) {
+			var d1 = new Date(b.dateStarted), d2 = new Date(b.dateFinished);
+			if (!isNaN(d1.getTime()) && !isNaN(d2.getTime()) && d2 > d1) arr.push((d2 - d1) / 86400000);
+		}
+		return arr;
+	}, []);
+	var avgDays = daysArr.length ? (daysArr.reduce(function(s, d) { return s + d; }, 0) / daysArr.length).toFixed(1) : '—';
+
+	// ── Rolling 12-month window (always has data, regardless of calendar year) ──
+	var nowD = new Date();
+	var rollingMonths = []; // [{label, ym, books, pages, goal}]
+	for (var rm = 11; rm >= 0; rm--) {
+		var d0 = new Date(nowD.getFullYear(), nowD.getMonth() - rm, 1);
+		rollingMonths.push({
+			label: MN[d0.getMonth()] + (rm > 0 || nowD.getMonth() !== d0.getMonth() ? " '" + String(d0.getFullYear()).slice(-2) : ''),
+			ym: d0.getFullYear() * 100 + d0.getMonth(),
+			books: 0,
+			pages: 0,
+			goal: Math.max(1, Math.round((yearlyGoal || 50) / 12))
+		});
+	}
+	finished.forEach(function(b) {
+		if (!b.dateFinished) return;
+		var d = new Date(b.dateFinished);
+		if (isNaN(d.getTime())) return;
+		var k = d.getFullYear() * 100 + d.getMonth();
+		for (var i = 0; i < rollingMonths.length; i++) {
+			if (rollingMonths[i].ym === k) {
+				rollingMonths[i].books++;
+				rollingMonths[i].pages += (b.pages || 0);
+				break;
+			}
+		}
+	});
+
+	// YTD cumulative goal progress
+	var ytdRows = [];
+	var cumulative = 0;
+	var monthlyGoalNum = Math.max(1, Math.round((yearlyGoal || 50) / 12));
+	for (var ym2 = 0; ym2 <= thisMonth; ym2++) {
+		var monthBooks = finishedThisYear.filter(function(b) {
+			var d = new Date(b.dateFinished);
+			return !isNaN(d.getTime()) && d.getMonth() === ym2;
+		}).length;
+		cumulative += monthBooks;
+		ytdRows.push({ label: MN[ym2], books: monthBooks, target: monthlyGoalNum * (ym2 + 1) });
+	}
+
+	var coverBooks = [];
+	allBooks.forEach(function(b) {
+		var url = (b.coverUrl && b.coverUrl.indexOf('http') === 0)
+			? b.coverUrl
+			: (b.isbn ? 'https://covers.openlibrary.org/b/isbn/' + b.isbn + '-L.jpg' : '');
+		if (!url) return;
+		coverBooks.push({
+			url: url.replace(/["']/g, ''),
+			title: b.title,
+			author: b.author,
+			series: b.series,
+			genre: b.genre,
+			status: b.status,
+			rating: b.rating
+		});
+	});
+
+	// ── Layout foundation ─────────────────────────────────────────────────
+	function _setCoverCell(cell, bk) {
+		cell.setFormula('=IMAGE("' + bk.url + '",4,' + COVER_H + ',' + COVER_W + ')')
+			.setBackground('#FFFFFF')
 			.setHorizontalAlignment('center').setVerticalAlignment('middle');
-		sheet.setRowHeight(row, 44);
+		var metaParts = [];
+		if (bk.series) metaParts.push('Series: ' + bk.series);
+		if (bk.genre) metaParts.push(bk.genre);
+		if (bk.status) metaParts.push(bk.status.charAt(0).toUpperCase() + bk.status.slice(1));
+		if (bk.rating) metaParts.push(new Array(bk.rating + 1).join('★'));
+		var noteParts = [bk.title];
+		if (bk.author) noteParts.push('by ' + bk.author);
+		if (metaParts.length) noteParts.push(metaParts.join('  ·  '));
+		cell.setNote(noteParts.join('\n'));
+	}
+
+	var heroCount = Math.min(coverBooks.length, 24);
+	var heroRows = Math.max(1, Math.ceil(Math.max(heroCount, 1) / COV_PER_ROW));
+	// Layout anchors — banner 1-7 (Library-style), KPI cards 8-10, spacer 11,
+	// hero header 12, hero covers from 13.
+	var KPI_TITLE = 8, KPI_VALUE = 9, KPI_SUB = 10;
+	var HERO_HEADER = 12;
+	var HERO_TOP = 13;
+	var ANALYTICS_HEADER = HERO_TOP + heroRows + 1;
+	var CHART_TOP = ANALYTICS_HEADER + 1;
+	var CHART_BOTTOM = CHART_TOP + 15;
+	var UTIL_HEADER = CHART_BOTTOM + 16;
+	var UTIL_TOP = UTIL_HEADER + 1;
+	var FULL_HEADER = UTIL_TOP + 9;
+	var FULL_TOP = FULL_HEADER + 1;
+
+	// ── Banner (rows 1–7) — mirrors Library banner styling ──────────────
+	// Rows 1–6: themed background. Rows 2–3 "My Year _" light, rows 4–5 "2026 _" bold, both right-aligned.
+	try { sheet.getRange(1, 1, 7, NUM_COLS).breakApart(); } catch(e) {}
+	sheet.getRange(1, 1, 7, NUM_COLS).clearContent();
+	sheet.setRowHeight(1, 10);
+	sheet.setRowHeights(2, 2, 28);
+	sheet.setRowHeights(4, 2, 28);
+	sheet.setRowHeight(6, 10);
+	sheet.setRowHeight(7, 8);
+	sheet.getRange(1, 1, 6, NUM_COLS).setBackground(t.headerBg);
+	try { sheet.getRange(2, 7, 2, 6).merge(); } catch(e) {}
+	sheet.getRange(2, 7, 2, 6)
+		.setValue('My Year _')
+		.setFontFamily('Montserrat').setFontSize(34).setFontWeight('normal')
+		.setFontColor('#FFFFFF').setBackground(t.headerBg)
+		.setHorizontalAlignment('right').setVerticalAlignment('bottom');
+	try { sheet.getRange(4, 7, 2, 6).merge(); } catch(e) {}
+	sheet.getRange(4, 7, 2, 6)
+		.setValue(thisYear + ' _')
+		.setFontFamily('Montserrat').setFontSize(34).setFontWeight('bold')
+		.setFontColor('#FFFFFF').setBackground(t.headerBg)
+		.setHorizontalAlignment('right').setVerticalAlignment('top');
+	sheet.getRange(7, 1, 1, NUM_COLS).setBackground('#FFFFFF');
+
+	// KPI cards — colored accent stripe + bold number; no emojis.
+	var cardPalette = [
+		{ accent:'#6366F1', tint:'#EEF2FF' },
+		{ accent:'#EC4899', tint:'#FDF2F8' },
+		{ accent:'#10B981', tint:'#ECFDF5' },
+		{ accent:'#F59E0B', tint:'#FFFBEB' }
+	];
+	var cards = [
+		{ c1:1, c2:3, title:'BOOKS THIS YEAR', value:String(goalDone), sub:goalDone + ' of ' + yearlyGoal + ' goal  ·  ' + goalPct + '%' },
+		{ c1:4, c2:6, title:'THIS MONTH', value:String(thisMonthCount), sub:MN[thisMonth] + ' ' + thisYear + '  ·  ' + streak + ' day streak' },
+		{ c1:7, c2:9, title:'PAGES TRACKED', value:(totalPages >= 1000 ? (totalPages / 1000).toFixed(1) + 'K' : String(totalPages)), sub:allBooks.length + ' books  ·  avg ' + (avgDays === '—' ? '—' : avgDays + 'd') },
+		{ c1:10, c2:12, title:'AVG RATING', value:avgRating + ' / 5', sub:'Top: ' + topGenre + '  ·  ' + ratedBooks.length + ' rated' }
+	];
+	cards.forEach(function(cd, idx) {
+		var pal = cardPalette[idx % cardPalette.length];
+		var w = cd.c2 - cd.c1 + 1;
+		sheet.getRange(KPI_TITLE, cd.c1, 1, w).merge()
+			.setValue('  ' + cd.title)
+			.setBackground(pal.tint)
+			.setFontColor(pal.accent).setFontFamily('Montserrat').setFontSize(10).setFontWeight('bold')
+			.setHorizontalAlignment('left').setVerticalAlignment('middle');
+		sheet.getRange(KPI_VALUE, cd.c1, 1, w).merge()
+			.setValue('  ' + cd.value)
+			.setBackground('#FFFFFF')
+			.setFontColor('#0F172A').setFontFamily('Montserrat').setFontSize(32).setFontWeight('bold')
+			.setHorizontalAlignment('left').setVerticalAlignment('middle');
+		sheet.getRange(KPI_SUB, cd.c1, 1, w).merge()
+			.setValue('  ' + cd.sub)
+			.setBackground('#FFFFFF')
+			.setFontColor('#64748B').setFontFamily('Montserrat').setFontSize(10)
+			.setHorizontalAlignment('left').setVerticalAlignment('middle');
+		sheet.getRange(KPI_TITLE, cd.c1, 3, w)
+			.setBorder(true, true, true, true, false, false, '#E2E8F0', SpreadsheetApp.BorderStyle.SOLID);
+		sheet.getRange(KPI_TITLE, cd.c1, 3, 1)
+			.setBorder(null, true, null, null, null, null, pal.accent, SpreadsheetApp.BorderStyle.SOLID_THICK);
+	});
+	sheet.setRowHeight(KPI_TITLE, 30);
+	sheet.setRowHeight(KPI_VALUE, 54);
+	sheet.setRowHeight(KPI_SUB, 28);
+	sheet.setRowHeight(11, 16);
+
+	// Top cover wall hero strip — match Library tab header styling (dark bar, white text)
+	sheet.getRange(HERO_HEADER, 1, 1, NUM_COLS).merge()
+		.setValue('   COVER WALL')
+		.setBackground(t.headerBg).setFontColor(t.headerText || '#FFFFFF')
+		.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold')
+		.setHorizontalAlignment('left').setVerticalAlignment('middle');
+	sheet.setRowHeight(HERO_HEADER, 32);
+
+	if (!coverBooks.length) {
+		sheet.setRowHeight(HERO_TOP, 58);
+		sheet.getRange(HERO_TOP, 1, 1, NUM_COLS).merge()
+			.setValue('No books with cover images yet. Add books with cover URLs, then run Advanced → Rebuild Sheet Structure.')
+			.setFontFamily('Montserrat').setFontSize(10).setFontColor('#9CA3AF')
+			.setHorizontalAlignment('center').setVerticalAlignment('middle').setBackground('#FFFFFF');
 		return;
 	}
 
-	monthOrder.forEach(function(key) {
-		var grp = byMonth[key];
-		// Month label row
-		sheet.getRange(row, 1, 1, NUM_COLS).merge()
-			.setValue(grp.label)
-			.setBackground('#F9FAFB').setFontFamily('Montserrat').setFontSize(10)
-			.setFontWeight('bold').setFontColor(t.headerBg)
+	for (var hr = 0; hr < heroRows; hr++) {
+		sheet.setRowHeight(HERO_TOP + hr, COVER_H);
+	}
+	for (var h = 0; h < heroCount; h++) {
+		var heroRow = HERO_TOP + Math.floor(h / COV_PER_ROW);
+		var heroCol = 1 + (h % COV_PER_ROW);
+		_setCoverCell(sheet.getRange(heroRow, heroCol), coverBooks[h]);
+	}
+	if (heroRows < 2) sheet.setRowHeight(HERO_TOP + 1, 10);
+
+	// Chart helper data
+	sheet.getRange(HELPER_ROW, 1, HELPER_ROWS, NUM_COLS).clearContent().setBackground('#FFFFFF').setFontColor('#FFFFFF');
+	var paceData = [['Month', 'Books']];
+	rollingMonths.forEach(function(rm) { paceData.push([rm.label, Math.max(0, rm.books)]); });
+	if (paceData.length < 2) paceData.push(['Now', 0]);
+	sheet.getRange(HELPER_ROW, 1, paceData.length, 2).setValues(paceData);
+
+	var ytdData = [['Month', 'Books', 'Target']];
+	if (!ytdRows.length) ytdData.push(['—', 0, monthlyGoalNum]);
+	else ytdRows.forEach(function(y) { ytdData.push([y.label, y.books, y.target]); });
+	sheet.getRange(HELPER_ROW, 4, ytdData.length, 3).setValues(ytdData);
+
+	var genrePairs = Object.keys(genreCounts)
+		.map(function(g) { return [g, genreCounts[g]]; })
+		.sort(function(a, b) { return b[1] - a[1]; })
+		.slice(0, 8);
+	if (!genrePairs.length) genrePairs = [['No Data', 1]];
+	var genreRows = [['Genre', 'Count']].concat(genrePairs);
+	sheet.getRange(HELPER_ROW, 8, genreRows.length, 2).setValues(genreRows);
+
+	var statusRows = [['Status', 'Count']];
+	Object.keys(statusCounts).forEach(function(k) { statusRows.push([k, Math.max(0, statusCounts[k])]); });
+	sheet.getRange(HELPER_ROW, 11, statusRows.length, 2).setValues(statusRows);
+	SpreadsheetApp.flush();
+
+	// Analytics header — match Library dark header styling
+	sheet.setRowHeight(ANALYTICS_HEADER - 1, 12);
+	sheet.getRange(ANALYTICS_HEADER, 1, 1, NUM_COLS).merge()
+		.setValue('   ANALYTICS')
+		.setBackground(t.headerBg).setFontColor(t.headerText || '#FFFFFF')
+		.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold')
+		.setHorizontalAlignment('left').setVerticalAlignment('middle');
+	sheet.setRowHeight(ANALYTICS_HEADER, 32);
+	for (var crow = CHART_TOP; crow < CHART_TOP + 30; crow++) sheet.setRowHeight(crow, 22);
+	sheet.setRowHeight(CHART_TOP + 14, 12);
+
+	// Charts — distinct palette per chart for visual diversity
+	var DIVERSE_PALETTE = ['#6366F1', '#EC4899', '#10B981', '#F59E0B', '#3B82F6', '#8B5CF6', '#EF4444', '#06B6D4', '#A855F7', '#14B8A6', '#F97316', '#0EA5E9'];
+	var CHART_W = 860, CHART_H = 320;
+	try {
+		var paceChart = sheet.newChart()
+			.setChartType(Charts.ChartType.COLUMN)
+			.addRange(sheet.getRange(HELPER_ROW, 1, paceData.length, 2))
+			.setNumHeaders(1)
+			.setPosition(CHART_TOP, 1, 8, 4)
+			.setOption('title', 'Reading Pace  ·  last 12 months')
+			.setOption('width', CHART_W)
+			.setOption('height', CHART_H)
+			.setOption('backgroundColor', '#FFFFFF')
+			.setOption('legend', { position: 'none' })
+			.setOption('colors', ['#6366F1'])
+			.setOption('hAxis', { textStyle: { fontName: 'Montserrat', fontSize: 11, color: '#475569' } })
+			.setOption('vAxis', { textStyle: { fontName: 'Montserrat', fontSize: 11, color: '#475569' }, minValue: 0, format: '0' })
+			.build();
+		sheet.insertChart(paceChart);
+
+		var ytdChart = sheet.newChart()
+			.setChartType(Charts.ChartType.COMBO)
+			.addRange(sheet.getRange(HELPER_ROW, 4, ytdData.length, 3))
+			.setNumHeaders(1)
+			.setPosition(CHART_TOP, 7, 8, 4)
+			.setOption('title', thisYear + ' Goal Progress  ·  cumulative vs target')
+			.setOption('width', CHART_W)
+			.setOption('height', CHART_H)
+			.setOption('backgroundColor', '#FFFFFF')
+			.setOption('legend', { position: 'top', textStyle: { fontName: 'Montserrat', fontSize: 11 } })
+			.setOption('seriesType', 'bars')
+			.setOption('series', { 0: { type: 'bars', color: '#EC4899' }, 1: { type: 'line', color: '#0F172A', lineWidth: 3, pointSize: 5 } })
+			.setOption('hAxis', { textStyle: { fontName: 'Montserrat', fontSize: 11, color: '#475569' } })
+			.setOption('vAxis', { textStyle: { fontName: 'Montserrat', fontSize: 11, color: '#475569' }, minValue: 0, format: '0' })
+			.build();
+		sheet.insertChart(ytdChart);
+
+		var genreChart = sheet.newChart()
+			.setChartType(Charts.ChartType.PIE)
+			.addRange(sheet.getRange(HELPER_ROW, 8, genreRows.length, 2))
+			.setNumHeaders(1)
+			.setPosition(CHART_TOP + 15, 1, 8, 4)
+			.setOption('title', 'Genre Mix')
+			.setOption('width', CHART_W)
+			.setOption('height', CHART_H)
+			.setOption('backgroundColor', '#FFFFFF')
+			.setOption('pieHole', 0.45)
+			.setOption('legend', { position: 'right', textStyle: { fontName: 'Montserrat', fontSize: 12 } })
+			.setOption('colors', DIVERSE_PALETTE)
+			.build();
+		sheet.insertChart(genreChart);
+
+		var statusChart = sheet.newChart()
+			.setChartType(Charts.ChartType.PIE)
+			.addRange(sheet.getRange(HELPER_ROW, 11, statusRows.length, 2))
+			.setNumHeaders(1)
+			.setPosition(CHART_TOP + 15, 7, 8, 4)
+			.setOption('title', 'Library Status')
+			.setOption('width', CHART_W)
+			.setOption('height', CHART_H)
+			.setOption('backgroundColor', '#FFFFFF')
+			.setOption('pieHole', 0.55)
+			.setOption('legend', { position: 'right', textStyle: { fontName: 'Montserrat', fontSize: 12 } })
+			.setOption('colors', ['#3B82F6', '#10B981', '#F59E0B', '#94A3B8'])
+			.build();
+		sheet.insertChart(statusChart);
+	} catch(chartErr) {
+		_log('warn', '_dbLiteInitMyYearSheet charts', chartErr);
+	}
+
+	// Compact utilities — match Library dark header
+	sheet.setRowHeight(UTIL_HEADER - 1, 12);
+	sheet.getRange(UTIL_HEADER, 1, 1, NUM_COLS).merge()
+		.setValue('   GOALS  ·  CHALLENGES  ·  SHELVES')
+		.setBackground(t.headerBg).setFontColor(t.headerText || '#FFFFFF')
+		.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold')
+		.setHorizontalAlignment('left').setVerticalAlignment('middle');
+	sheet.setRowHeight(UTIL_HEADER, 32);
+	var UTIL_ROWS = 8;
+	sheet.setRowHeight(UTIL_TOP, 32);         // panel title row
+	for (var ur = UTIL_TOP + 1; ur < UTIL_TOP + UTIL_ROWS; ur++) {
+		sheet.setRowHeight(ur, 34);
+		sheet.getRange(ur, 1, 1, NUM_COLS).setBackground('#FFFFFF');
+	}
+	sheet.getRange(UTIL_TOP, 1, 1, NUM_COLS).setBackground('#FFFFFF');
+
+	var chalSheet = ss.getSheetByName(SHEET_CHALLENGES);
+	var challenges = chalSheet ? _sheetToObjects(chalSheet, CHALLENGE_HEADERS) : [];
+	var shelfSheet = ss.getSheetByName(SHEET_SHELVES);
+	var shelves = shelfSheet ? _sheetToObjects(shelfSheet, SHELF_HEADERS) : [];
+
+	// Panel titles with colored accent stripe, matching KPI cards
+	var PANEL_ACCENTS = [
+		{ accent:'#6366F1', tint:'#EEF2FF', label:'YEAR GOAL' },
+		{ accent:'#EC4899', tint:'#FDF2F8', label:'CHALLENGES' },
+		{ accent:'#10B981', tint:'#ECFDF5', label:'SHELVES' }
+	];
+	var panelCols = [1, 5, 9];
+	PANEL_ACCENTS.forEach(function(p, i) {
+		var col = panelCols[i];
+		sheet.getRange(UTIL_TOP, col, 1, 4).merge()
+			.setValue('  ' + p.label)
+			.setBackground(p.tint).setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold').setFontColor(p.accent)
 			.setHorizontalAlignment('left').setVerticalAlignment('middle');
-		sheet.setRowHeight(row, 28);
-		row++;
-		// Cover grid
-		var col = 2; // start at column B
-		grp.covers.forEach(function(url) {
-			sheet.getRange(row, col)
-				.setFormula('=IMAGE("' + url + '",4,' + COVER_H + ',' + COVER_W + ')')
-				.setVerticalAlignment('middle').setHorizontalAlignment('center')
-				.setBackground('#FFFFFF');
-			sheet.setRowHeight(row, COVER_H);
-			col++;
-			if (col > COVERS_PER_ROW + 1) { col = 2; row++; sheet.setRowHeight(row, COVER_H); }
-		});
-		if (col > 2) row++; // finish partial row
-		sheet.setRowHeight(row, 14);
-		row++;
 	});
+
+	// YEAR GOAL panel — big number + graphical progress bar using Unicode blocks
+	var bars = Math.round(goalPct / 5); // 0..20 blocks
+	var goalBarFull = new Array(Math.max(0, bars) + 1).join('█') + new Array(Math.max(0, 20 - bars) + 1).join('░');
+	sheet.getRange(UTIL_TOP + 1, 1, 1, 4).merge()
+		.setValue('  ' + goalDone + ' / ' + yearlyGoal)
+		.setFontFamily('Montserrat').setFontSize(26).setFontWeight('bold').setFontColor('#0F172A')
+		.setBackground('#FFFFFF').setVerticalAlignment('middle');
+	sheet.getRange(UTIL_TOP + 2, 1, 1, 4).merge()
+		.setValue('  ' + goalBarFull)
+		.setFontFamily('Roboto Mono').setFontSize(14).setFontColor('#6366F1')
+		.setBackground('#FFFFFF').setVerticalAlignment('middle');
+	sheet.getRange(UTIL_TOP + 3, 1, 1, 4).merge()
+		.setValue('  ' + goalPct + '% of year goal')
+		.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold').setFontColor('#6366F1')
+		.setBackground('#FFFFFF').setVerticalAlignment('middle');
+	sheet.getRange(UTIL_TOP + 4, 1, 1, 4).merge()
+		.setValue('  Streak:  ' + streak + ' days')
+		.setFontFamily('Montserrat').setFontSize(11).setFontColor('#334155')
+		.setBackground('#FFFFFF').setVerticalAlignment('middle');
+	sheet.getRange(UTIL_TOP + 5, 1, 1, 4).merge()
+		.setValue('  Pace:     ' + (avgDays === '—' ? '—' : avgDays + ' days / book'))
+		.setFontFamily('Montserrat').setFontSize(11).setFontColor('#334155')
+		.setBackground('#FFFFFF').setVerticalAlignment('middle');
+	sheet.getRange(UTIL_TOP + 6, 1, 1, 4).merge()
+		.setValue('  Top genre:  ' + topGenre)
+		.setFontFamily('Montserrat').setFontSize(11).setFontColor('#334155')
+		.setBackground('#FFFFFF').setVerticalAlignment('middle');
+	sheet.getRange(UTIL_TOP + 7, 1, 1, 4).merge()
+		.setBackground('#FFFFFF');
+
+	// CHALLENGES panel — stacked: bold name on top, mini bar + count below, readable font
+	for (var ci = 0; ci < 3; ci++) {
+		var rowR = UTIL_TOP + 1 + (ci * 2);
+		var rowR2 = rowR + 1;
+		if (ci < challenges.length) {
+			var ch = challenges[ci];
+			var curV = Number(ch.Current) || 0;
+			var tarV = Math.max(1, Number(ch.Target) || 1);
+			var pct = Math.min(100, Math.round(curV / tarV * 100));
+			var b = Math.round(pct / 5); // 0..20 blocks
+			var mini = new Array(Math.max(0, b) + 1).join('█') + new Array(Math.max(0, 20 - b) + 1).join('░');
+			var nm = String(ch.Name || '').slice(0, 30);
+			sheet.getRange(rowR, 5, 1, 4).merge()
+				.setValue('  ' + nm + '     ' + curV + ' / ' + tarV)
+				.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold').setFontColor('#0F172A')
+				.setBackground('#FFFFFF').setVerticalAlignment('middle');
+			sheet.getRange(rowR2, 5, 1, 4).merge()
+				.setValue('  ' + mini + '   ' + pct + '%')
+				.setFontFamily('Roboto Mono').setFontSize(12).setFontColor('#EC4899')
+				.setBackground('#FFFFFF').setVerticalAlignment('middle');
+		} else if (ci === 0) {
+			sheet.getRange(rowR, 5, 2, 4).merge()
+				.setValue('  No challenges yet.')
+				.setFontFamily('Montserrat').setFontSize(11).setFontColor('#94A3B8')
+				.setBackground('#FFFFFF').setVerticalAlignment('middle');
+		} else {
+			sheet.getRange(rowR, 5, 2, 4).merge().setBackground('#FFFFFF');
+		}
+	}
+	sheet.getRange(UTIL_TOP + 7, 5, 1, 4).merge().setBackground('#FFFFFF');
+
+	// SHELVES panel — bold name left + book count right in an emerald chip
+	var shelfCountMap = {};
+	allBooks.forEach(function(b) {
+		var key = (b.genre || '').toLowerCase();
+		shelfCountMap[key] = (shelfCountMap[key] || 0) + 1;
+	});
+	for (var si = 0; si < UTIL_ROWS - 1; si++) {
+		var rowS = UTIL_TOP + 1 + si;
+		if (si < shelves.length) {
+			var sh = shelves[si];
+			var nm2 = String(sh.Name || '').slice(0, 26);
+			var cnt = shelfCountMap[nm2.toLowerCase()] || 0;
+			sheet.getRange(rowS, 9, 1, 3).merge()
+				.setValue('  ●   ' + nm2)
+				.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold').setFontColor('#0F172A')
+				.setBackground('#FFFFFF').setVerticalAlignment('middle');
+			sheet.getRange(rowS, 12, 1, 1)
+				.setValue(cnt + ' books  ')
+				.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold').setFontColor('#10B981')
+				.setBackground('#FFFFFF').setHorizontalAlignment('right').setVerticalAlignment('middle');
+		} else if (si === 0) {
+			sheet.getRange(rowS, 9, 1, 4).merge()
+				.setValue('  No shelves yet.')
+				.setFontFamily('Montserrat').setFontSize(11).setFontColor('#94A3B8')
+				.setBackground('#FFFFFF').setVerticalAlignment('middle');
+		} else {
+			sheet.getRange(rowS, 9, 1, 4).merge().setBackground('#FFFFFF');
+		}
+	}
+
+	// Outer borders + colored accent stripes on each panel
+	PANEL_ACCENTS.forEach(function(p, i) {
+		var col = panelCols[i];
+		sheet.getRange(UTIL_TOP, col, UTIL_ROWS, 4)
+			.setBorder(true, true, true, true, false, false, '#E2E8F0', SpreadsheetApp.BorderStyle.SOLID);
+		sheet.getRange(UTIL_TOP, col, UTIL_ROWS, 1)
+			.setBorder(null, true, null, null, null, null, p.accent, SpreadsheetApp.BorderStyle.SOLID_THICK);
+	});
+
+	// Full library wall — shows ALL books (not just overflow) to match web app Library tab
+	sheet.setRowHeight(FULL_HEADER - 1, 12);
+	sheet.getRange(FULL_HEADER, 1, 1, NUM_COLS).merge()
+		.setValue('   FULL LIBRARY  ·  ' + allBooks.length + ' books  ·  hover any cover for details')
+		.setBackground(t.headerBg).setFontColor(t.headerText || '#FFFFFF')
+		.setFontFamily('Montserrat').setFontSize(11).setFontWeight('bold')
+		.setHorizontalAlignment('left').setVerticalAlignment('middle');
+	sheet.setRowHeight(FULL_HEADER, 32);
+
+	// Start the lower library wall after the hero selection so it feels like a
+	// broader catalog, not a repeated copy of the same first row of covers.
+	var fullBooks = coverBooks.length > heroCount
+		? coverBooks.slice(heroCount).concat(coverBooks.slice(0, heroCount))
+		: coverBooks;
+	if (!fullBooks.length) return;
+	var totalCoverRows = Math.ceil(fullBooks.length / COV_PER_ROW);
+	for (var rh = 0; rh < totalCoverRows; rh++) sheet.setRowHeight(FULL_TOP + rh, COVER_H);
+	for (var fi = 0; fi < fullBooks.length; fi++) {
+		var fullRow = FULL_TOP + Math.floor(fi / COV_PER_ROW);
+		var fullCol = 1 + (fi % COV_PER_ROW);
+		_setCoverCell(sheet.getRange(fullRow, fullCol), fullBooks[fi]);
+	}
 }
 
 function _dbLiteApplyValidations(sheet) {
@@ -393,32 +982,23 @@ function _dbLiteApplyValidations(sheet) {
 	var genreCol  = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Genre');
 	var ratingCol = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Rating');
 	var formatCol = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Format');
+	var favColV   = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Favorite');
 
-	sheet.getRange(startRow, statusCol, dataRows, 1).setDataValidation(
-		SpreadsheetApp.newDataValidation()
-			.requireValueInList(['Reading','Finished','Want to Read','DNF'], true)
-			.setAllowInvalid(false).build()
-	);
-	sheet.getRange(startRow, genreCol, dataRows, 1).setDataValidation(
-		SpreadsheetApp.newDataValidation()
-			.requireValueInList([
-				'Romance','Fantasy','Mystery','Thriller','SciFi','Historical',
-				'Memoir','Biography','Self-Help','Nonfiction','Fiction',
-				'Horror','YA','Poetry','Classics','Literary','Graphic','Other'
-			], true)
-			.setAllowInvalid(false).build()
-	);
-	// Rating stored as star strings (★ through ★★★★★) — chip dropdown
-	sheet.getRange(startRow, ratingCol, dataRows, 1).setDataValidation(
-		SpreadsheetApp.newDataValidation()
-			.requireValueInList(['★','★★','★★★','★★★★','★★★★★'], true)
-			.setAllowInvalid(true).build()
-	);
-	sheet.getRange(startRow, formatCol, dataRows, 1).setDataValidation(
-		SpreadsheetApp.newDataValidation()
-			.requireValueInList(['Paperback','Hardcover','Ebook','Audiobook'], true)
-			.setAllowInvalid(true).build()
-	);
+	function list(col, values, allowInvalid) {
+		sheet.getRange(startRow, col, dataRows, 1).setDataValidation(
+			SpreadsheetApp.newDataValidation()
+				.requireValueInList(values, true)
+				.setAllowInvalid(!!allowInvalid).build()
+		);
+	}
+
+	list(statusCol, ['Reading', 'Finished', 'Want to Read', 'DNF']);
+	list(genreCol,  ['Romance','Fantasy','Mystery','Thriller','SciFi','Historical',
+		            'Memoir','Biography','Self-Help','Nonfiction','Fiction',
+		            'Horror','YA','Poetry','Classics','Literary','Graphic','Other']);
+	list(ratingCol, ['★','★★','★★★','★★★★','★★★★★'], true);
+	list(formatCol, ['Paperback', 'Hardcover', 'Ebook', 'Audiobook'], true);
+	list(favColV,   ['♥', ''], true);
 }
 
 function _dbLiteApplyPillFormatting(sheet) {
@@ -428,52 +1008,61 @@ function _dbLiteApplyPillFormatting(sheet) {
 	var genreCol  = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Genre');
 	var ratingCol = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Rating');
 	var formatCol = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Format');
-	var rules = [];
+	var favColP   = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('Favorite');
+	var rules     = [];
 
-	function pill(col, value, bg, fg) {
-		return SpreadsheetApp.newConditionalFormatRule()
-			.whenTextEqualTo(value).setBackground(bg).setFontColor(fg).setBold(true)
-			.setRanges([sheet.getRange(startRow, col, dataRows, 1)]).build();
+	function pill(col, val, bg, fg) {
+		rules.push(SpreadsheetApp.newConditionalFormatRule()
+			.whenTextEqualTo(val).setBackground(bg).setFontColor(fg || '#FFFFFF').setBold(true)
+			.setRanges([sheet.getRange(startRow, col, dataRows, 1)]).build());
+	}
+	function textOnly(col, val, fg) {
+		rules.push(SpreadsheetApp.newConditionalFormatRule()
+			.whenTextEqualTo(val).setFontColor(fg).setBold(true)
+			.setRanges([sheet.getRange(startRow, col, dataRows, 1)]).build());
 	}
 
-	// Status — pastel
-	rules.push(pill(statusCol, 'Reading',      '#BFDBFE', '#1E3A8A'));
-	rules.push(pill(statusCol, 'Finished',     '#BBF7D0', '#14532D'));
-	rules.push(pill(statusCol, 'Want to Read', '#FED7AA', '#7C2D12'));
-	rules.push(pill(statusCol, 'DNF',          '#E5E7EB', '#374151'));
+	// Status
+	pill(statusCol, 'Reading',      '#BFDBFE', '#1E3A8A');
+	pill(statusCol, 'Finished',     '#BBF7D0', '#14532D');
+	pill(statusCol, 'Want to Read', '#FED7AA', '#7C2D12');
+	pill(statusCol, 'DNF',          '#E5E7EB', '#374151');
 
-	// Genre — vivid deep colors, white text (matches template screenshot exactly)
-	rules.push(pill(genreCol, 'Romance',    '#991B1B', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Fantasy',    '#5B21B6', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Mystery',    '#312E81', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Thriller',   '#7F1D1D', '#FFFFFF'));
-	rules.push(pill(genreCol, 'SciFi',      '#155E75', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Historical', '#78350F', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Memoir',     '#115E59', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Biography',  '#1E3A8A', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Self-Help',  '#14532D', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Nonfiction', '#334155', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Fiction',    '#1F2937', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Horror',     '#0F172A', '#FFFFFF'));
-	rules.push(pill(genreCol, 'YA',         '#9D174D', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Poetry',     '#6B21A8', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Classics',   '#92400E', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Literary',   '#1E293B', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Graphic',    '#7C3AED', '#FFFFFF'));
-	rules.push(pill(genreCol, 'Other',      '#4B5563', '#FFFFFF'));
+	// Genre
+	pill(genreCol, 'Romance',    '#DB2777', '#FFFFFF');
+	pill(genreCol, 'Fantasy',    '#7C3AED', '#FFFFFF');
+	pill(genreCol, 'Mystery',    '#1D4ED8', '#FFFFFF');
+	pill(genreCol, 'Thriller',   '#DC2626', '#FFFFFF');
+	pill(genreCol, 'SciFi',      '#0891B2', '#FFFFFF');
+	pill(genreCol, 'Historical', '#B45309', '#FFFFFF');
+	pill(genreCol, 'Memoir',     '#059669', '#FFFFFF');
+	pill(genreCol, 'Biography',  '#2563EB', '#FFFFFF');
+	pill(genreCol, 'Self-Help',  '#EA580C', '#FFFFFF');
+	pill(genreCol, 'Nonfiction', '#475569', '#FFFFFF');
+	pill(genreCol, 'Fiction',    '#0F766E', '#FFFFFF');
+	pill(genreCol, 'Horror',     '#1E293B', '#FFFFFF');
+	pill(genreCol, 'YA',         '#BE185D', '#FFFFFF');
+	pill(genreCol, 'Poetry',     '#6D28D9', '#FFFFFF');
+	pill(genreCol, 'Classics',   '#92400E', '#FFFFFF');
+	pill(genreCol, 'Literary',   '#334155', '#FFFFFF');
+	pill(genreCol, 'Graphic',    '#6366F1', '#FFFFFF');
+	pill(genreCol, 'Other',      '#64748B', '#FFFFFF');
 
-	// Rating — graduated amber (★ = pale, ★★★★★ = full gold)
-	rules.push(pill(ratingCol, '★',     '#FFF7ED', '#C2410C'));
-	rules.push(pill(ratingCol, '★★',    '#FEF3C7', '#92400E'));
-	rules.push(pill(ratingCol, '★★★',   '#FDE68A', '#78350F'));
-	rules.push(pill(ratingCol, '★★★★',  '#FCD34D', '#451A03'));
-	rules.push(pill(ratingCol, '★★★★★', '#F59E0B', '#451A03'));
+	// Rating — gold text, no background
+	textOnly(ratingCol, '★',     '#F59E0B');
+	textOnly(ratingCol, '★★',    '#F59E0B');
+	textOnly(ratingCol, '★★★',   '#F59E0B');
+	textOnly(ratingCol, '★★★★',  '#F59E0B');
+	textOnly(ratingCol, '★★★★★', '#F59E0B');
 
-	// Format — soft pastels
-	rules.push(pill(formatCol, 'Paperback',  '#EDE9FE', '#5B21B6'));
-	rules.push(pill(formatCol, 'Hardcover',  '#DBEAFE', '#1E40AF'));
-	rules.push(pill(formatCol, 'Ebook',      '#CFFAFE', '#155E75'));
-	rules.push(pill(formatCol, 'Audiobook',  '#FDF4FF', '#6B21A8'));
+	// Format
+	pill(formatCol, 'Paperback',  '#EDE9FE', '#5B21B6');
+	pill(formatCol, 'Hardcover',  '#DBEAFE', '#1E40AF');
+	pill(formatCol, 'Ebook',      '#CFFAFE', '#155E75');
+	pill(formatCol, 'Audiobook',  '#FDF4FF', '#6B21A8');
+
+	// Favorite — deep red heart, no background
+	textOnly(favColP, '♥', '#DC2626');
 
 	sheet.setConditionalFormatRules(rules);
 }
@@ -524,13 +1113,14 @@ var SHEET_MYYEAR      = 'My Year';
 var LIBRARY_DATA_COL      = 2;   // Column B
 var LIBRARY_HEADER_ROW    = 8;
 var LIBRARY_DATA_ROW      = 9;
-var LIBRARY_VISIBLE_COUNT = 12;  // Title → Favorite (cols B–M)
+var LIBRARY_VISIBLE_COUNT = 11;  // Title → Favorite (cols B–L)
 
 var LIBRARY_HEADERS = [
-	// ── Visible columns (B–M, 12 total) ─────────────────────────────────
-	'Title','Author','Status','Genre','Rating','Format','Pages',
-	'DateStarted','DateFinished','Series','SeriesNumber','Favorite',
-	// ── Hidden columns (N onward — webapp internals, never visible) ──────
+	// ── Visible columns (B–L, 11 total) ──────────────────────────────────
+	'Title','Author','Series','Status','Genre','Rating','Format','Pages',
+	'DateStarted','DateFinished','Favorite',
+	// ── Hidden columns (M onward — webapp internals) ──────────────────────
+	'SeriesNumber',
 	'BookId','CoverUrl','CoverEmoji','Gradient1','Gradient2',
 	'DateAdded','CurrentPage','TbrPriority','Source','SpiceLevel',
 	'Tags','Shelves','Notes','Review','Quotes',
@@ -635,7 +1225,7 @@ var _VALID_THEME_KEYS = (function() {
 
 function _validateTheme(name) {
 	var t = String(name || '').toLowerCase().trim();
-	return _VALID_THEME_KEYS[t] ? t : 'blossom';
+	return _VALID_THEME_KEYS[t] ? t : 'romantic';
 }
 
 function _getOrCreateSheet(name, headers) {
@@ -645,12 +1235,13 @@ function _getOrCreateSheet(name, headers) {
 	if (!sheet) {
 		sheet = ss.insertSheet(name);
 		_ensureColumns(sheet, displayRow.length);
-		sheet.getRange(1, 1, 1, displayRow.length).setValues([displayRow]);
-		sheet.setFrozenRows(1);
+		// Library rows 1-8 are built entirely by _dbLiteInitLibrarySheet — never touch row 1.
+		if (name !== SHEET_LIBRARY) {
+			sheet.getRange(1, 1, 1, displayRow.length).setValues([displayRow]);
+			sheet.setFrozenRows(1);
+		}
 	} else {
 		_ensureColumns(sheet, displayRow.length);
-		// Write headers on row 1 of hidden utility sheets so the data model is stable.
-		// The VISIBLE Library sheet re-arranges row 1/2 in _dbLiteInitLibrarySheet.
 		if (name !== SHEET_LIBRARY) {
 			sheet.getRange(1, 1, 1, displayRow.length).setValues([displayRow]);
 		}
@@ -749,14 +1340,14 @@ function _colLetter(col) {
 }
 
 function _getThemePalette(themeName) {
-	return THEME_PALETTES[String(themeName || '').toLowerCase()] || THEME_PALETTES.blossom;
+	return THEME_PALETTES[String(themeName || '').toLowerCase()] || THEME_PALETTES.romantic;
 }
 
 function _getCurrentTheme() {
 	var sheet = _ss().getSheetByName(SHEET_PROFILE);
-	if (!sheet || sheet.getLastRow() < 2) return 'blossom';
+	if (!sheet || sheet.getLastRow() < 2) return 'romantic';
 	var themeCol = PROFILE_HEADERS.indexOf('Theme') + 1;
-	return String(sheet.getRange(2, themeCol).getValue() || 'blossom').toLowerCase();
+	return String(sheet.getRange(2, themeCol).getValue() || 'romantic').toLowerCase();
 }
 
 // Covers are NEVER rendered in the visible sheet — this is intentional for
@@ -883,7 +1474,7 @@ function clientGetInitialData() {
 	}
 
 	var settings = {
-		Theme: String(profileData.Theme || 'blossom'),
+		Theme: String(profileData.Theme || 'romantic'),
 		ShowSpoilers: String(profileData.ShowSpoilers || 'false')
 	};
 
@@ -992,10 +1583,17 @@ function clientDeleteBook(bookId) {
 
 function _bookPayloadToRow(bookId, p) {
 	function _cap(v, n) { return String(v || '').slice(0, n); }
+	// Combine Series + SeriesNumber into one visible column (e.g. "ACOTAR #1")
+	var _serName = String(p.Series || p.series || '').trim();
+	var _serNum = p.SeriesOrder || p.SeriesNumber || p.seriesNumber || '';
+	// Strip trailing " #N" if the caller already pre-combined the string
+	var _serNameClean = _serName.replace(/\s+#\d+$/, '');
+	var _serDisplay = _serNameClean + (_serNum && _serNameClean ? ' #' + _serNum : _serNameClean ? '' : '');
 	// Order must match LIBRARY_HEADERS exactly
 	return [
 		_cap(p.Title, 500),
 		_cap(p.Author, 300),
+		_cap(_serDisplay, 200),                        // Series (visible, combined)
 		p.Status ? _uiStatusToSheet(p.Status) : 'Want to Read',
 		_cap(p.Genres || p.Genre, 200),
 		_numToStars(p.Rating),
@@ -1003,10 +1601,9 @@ function _bookPayloadToRow(bookId, p) {
 		Number(p.PageCount || p.Pages) || 0,
 		p.DateStarted || '',
 		p.DateFinished || '',
-		_cap(p.Series, 200),
-		p.SeriesOrder || p.SeriesNumber || '',
-		p.Favorite === true || p.Favorite === 'true',
-		// Hidden columns
+		p.Favorite === true || p.Favorite === 'true', // Favorite (visible)
+		// Hidden columns below
+		p.SeriesOrder || p.SeriesNumber || '',         // SeriesNumber
 		bookId,
 		_cap(p.CoverUrlPrimary || p.CoverUrl, 2000),
 		p.CoverEmoji || '',
@@ -1305,12 +1902,16 @@ function _seedDemoData() {
 	var libSheet = _ss().getSheetByName(SHEET_LIBRARY);
 	if (!libSheet) libSheet = _getOrCreateSheet(SHEET_LIBRARY, LIBRARY_HEADERS);
 
-	// Exit if any real book row already exists (Title column = col B = LIBRARY_DATA_COL).
+	// Inspect any existing rows. We normally do not reseed over existing data,
+	// but we do allow a one-time safe upgrade from the original 26-book demo set
+	// to the expanded 72-book demo catalog.
+	var existingTitles = [];
 	var lastRow = libSheet.getLastRow();
 	if (lastRow >= LIBRARY_DATA_ROW) {
 		var titleVals = libSheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL, lastRow - LIBRARY_DATA_ROW + 1, 1).getValues();
 		for (var i = 0; i < titleVals.length; i++) {
-			if (String(titleVals[i][0] || '').trim() !== '') return;
+			var existingTitle = String(titleVals[i][0] || '').trim();
+			if (existingTitle) existingTitles.push(existingTitle);
 		}
 	}
 
@@ -1326,73 +1927,135 @@ function _seedDemoData() {
 
 	var demoBooks = [
 		{ t:'Beach Read', a:'Emily Henry', g:'Romance', isbn:'9781984806734', pg:352, r:5, stat:'Finished', da:_weeksAgo(11,2), df:_monthDate(0,2), fmt:'Paperback' },
-		{ t:'Circe', a:'Madeline Miller', g:'Fantasy', isbn:'9780316556347', pg:393, r:5, stat:'Finished', da:_weeksAgo(10,0), df:_monthDate(2,14), fmt:'Hardcover' },
+		{ t:'Circe', a:'Madeline Miller', g:'Fantasy', isbn:'9780316556347', pg:393, r:5, stat:'Finished', da:_weeksAgo(10,0), df:_monthDate(2,14), fmt:'Hardcover', ser:'Greek Myths', sn:2 },
 		{ t:'The Silent Patient', a:'Alex Michaelides', g:'Thriller', isbn:'9781250301697', pg:325, r:4, stat:'Finished', da:_weeksAgo(9,4), df:_monthDate(1,3), fmt:'Paperback' },
 		{ t:'Atomic Habits', a:'James Clear', g:'Self-Help', isbn:'9780735211292', pg:306, r:5, stat:'Finished', da:_weeksAgo(8,1), df:_monthDate(5,22), fmt:'Audiobook' },
-		{ t:'The Song of Achilles', a:'Madeline Miller', g:'Fantasy', isbn:'9780062060624', pg:352, r:5, stat:'Finished', da:_weeksAgo(0,0), df:_monthDate(2,27), fmt:'Paperback' },
+		{ t:'The Song of Achilles', a:'Madeline Miller', g:'Fantasy', isbn:'9780062060624', pg:352, r:5, stat:'Finished', da:_weeksAgo(0,0), df:_monthDate(2,27), fmt:'Paperback', ser:'Greek Myths', sn:1 },
 		{ t:'Where the Crawdads Sing', a:'Delia Owens', g:'Mystery', isbn:'9780735224292', pg:368, r:5, stat:'Finished', da:_weeksAgo(6,0), df:_monthDate(1,27), fmt:'Hardcover' },
 		{ t:'Project Hail Mary', a:'Andy Weir', g:'SciFi', isbn:'9780593135204', pg:476, r:5, stat:'Finished', da:_weeksAgo(4,5), df:_monthDate(1,20), fmt:'Ebook' },
-		{ t:'The Guest List', a:'Lucy Foley', g:'Mystery', isbn:'9780062868930', pg:312, r:4, stat:'Finished', da:_weeksAgo(8,5), df:_monthDate(4,24), fmt:'Paperback' },
+		{ t:'The Guest List', a:'Lucy Foley', g:'Mystery', isbn:'9780062868930', pg:312, r:4, stat:'Finished', da:_weeksAgo(8,5), df:_monthDate(4,24), fmt:'Paperback', ser:'Foley Mysteries', sn:2 },
 		{ t:'Educated', a:'Tara Westover', g:'Memoir', isbn:'9780399590504', pg:334, r:5, stat:'Finished', da:_weeksAgo(3,3), df:_monthDate(1,8), fmt:'Hardcover' },
-		{ t:'The Invisible Life of Addie LaRue', a:'V.E. Schwab', g:'Fantasy', isbn:'9780765387561', pg:448, r:5, stat:'Finished', da:_weeksAgo(1,4), df:_monthDate(2,25), fmt:'Paperback' },
+		{ t:'The Invisible Life of Addie LaRue', a:'V.E. Schwab', g:'Fantasy', isbn:'9780765387561', pg:448, r:5, stat:'Finished', da:_weeksAgo(1,4), df:_monthDate(2,25), fmt:'Paperback', ser:'Addie LaRue', sn:1 },
 		{ t:'The Vanishing Half', a:'Brit Bennett', g:'Fiction', isbn:'9780525536291', pg:343, r:4, stat:'Finished', da:_weeksAgo(4,1), df:_monthDate(1,14), fmt:'Hardcover' },
 		{ t:'Verity', a:'Colleen Hoover', g:'Thriller', isbn:'9781538724736', pg:374, r:5, stat:'Finished', da:_weeksAgo(7,3), df:_monthDate(4,3), fmt:'Paperback' },
 		{ t:'Book Lovers', a:'Emily Henry', g:'Romance', isbn:'9780593334836', pg:368, r:5, stat:'Finished', da:_weeksAgo(3,0), df:_monthDate(2,4), fmt:'Paperback' },
 		{ t:'The Spanish Love Deception', a:'Elena Armas', g:'Romance', isbn:'9781982177010', pg:358, r:4, stat:'Finished', da:_weeksAgo(5,2), df:_monthDate(1,10), fmt:'Ebook' },
-		{ t:'A Court of Thorns and Roses', a:'Sarah J. Maas', g:'Fantasy', isbn:'9781635575569', pg:419, r:5, stat:'Finished', da:_weeksAgo(6,4), df:_monthDate(3,19), fmt:'Paperback' },
-		{ t:'The Thursday Murder Club', a:'Richard Osman', g:'Mystery', isbn:'9781984880963', pg:369, r:4, stat:'Finished', da:_weeksAgo(2,5), df:_monthDate(2,20), fmt:'Hardcover' },
+		{ t:'A Court of Thorns and Roses', a:'Sarah J. Maas', g:'Fantasy', isbn:'9781635575569', pg:419, r:5, stat:'Finished', da:_weeksAgo(6,4), df:_monthDate(3,19), fmt:'Paperback', ser:'ACOTAR', sn:1 },
+		{ t:'The Thursday Murder Club', a:'Richard Osman', g:'Mystery', isbn:'9781984880963', pg:369, r:4, stat:'Finished', da:_weeksAgo(2,5), df:_monthDate(2,20), fmt:'Hardcover', ser:'Thursday Murder Club', sn:1 },
 		{ t:'The Four Winds', a:'Kristin Hannah', g:'Historical', isbn:'9781250178602', pg:454, r:5, stat:'Finished', da:_weeksAgo(2,2), df:_monthDate(5,8), fmt:'Hardcover' },
 		{ t:'Normal People', a:'Sally Rooney', g:'Romance', isbn:'9781984822185', pg:266, r:4, stat:'Finished', da:_weeksAgo(9,4), df:_monthDate(5,15), fmt:'Paperback' },
-		{ t:'The House in the Cerulean Sea', a:'TJ Klune', g:'Fantasy', isbn:'9781250217288', pg:396, r:5, stat:'Finished', da:_weeksAgo(6,0), df:_monthDate(4,29), fmt:'Paperback' },
+		{ t:'The House in the Cerulean Sea', a:'TJ Klune', g:'Fantasy', isbn:'9781250217288', pg:396, r:5, stat:'Finished', da:_weeksAgo(6,0), df:_monthDate(4,29), fmt:'Paperback', ser:'Cerulean Chronicles', sn:1 },
 		{ t:'Malibu Rising', a:'Taylor Jenkins Reid', g:'Fiction', isbn:'9780593158203', pg:369, r:5, stat:'Finished', da:_weeksAgo(0,4), df:_monthDate(3,5), fmt:'Hardcover' },
 		{ t:'The Love Hypothesis', a:'Ali Hazelwood', g:'Romance', isbn:'9780593336823', pg:357, r:4, stat:'Finished', da:_weeksAgo(2,2), df:_monthDate(1,25), fmt:'Paperback' },
 		{ t:'Daisy Jones & The Six', a:'Taylor Jenkins Reid', g:'Fiction', isbn:'9781524798628', pg:368, r:5, stat:'Finished', da:_weeksAgo(1,1), df:_monthDate(3,12), fmt:'Audiobook' },
-		{ t:'The Atlas Six', a:'Olivie Blake', g:'Fantasy', isbn:'9781250854513', pg:374, r:4, stat:'Finished', da:_weeksAgo(3,3), df:_monthDate(3,26), fmt:'Paperback' },
+		{ t:'The Atlas Six', a:'Olivie Blake', g:'Fantasy', isbn:'9781250854513', pg:374, r:4, stat:'Finished', da:_weeksAgo(3,3), df:_monthDate(3,26), fmt:'Paperback', ser:'The Atlas Six', sn:1 },
 		{ t:'Red, White & Royal Blue', a:'Casey McQuiston', g:'Romance', isbn:'9781250316776', pg:352, r:5, stat:'Finished', da:_weeksAgo(0,2), df:_monthDate(2,20), fmt:'Paperback' },
 		{ t:'It Ends With Us', a:'Colleen Hoover', g:'Romance', isbn:'9781501110375', pg:376, r:5, stat:'Reading', da:_weeksAgo(0,0), ds:'2026-03-22', cp:169, fmt:'Paperback' },
-		{ t:'The Midnight Library', a:'Matt Haig', g:'Fiction', isbn:'9780525559474', pg:304, r:4, stat:'Reading', da:_weeksAgo(0,2), ds:'2026-03-01', cp:249, fmt:'Hardcover' }
+		{ t:'The Midnight Library', a:'Matt Haig', g:'Fiction', isbn:'9780525559474', pg:304, r:4, stat:'Reading', da:_weeksAgo(0,2), ds:'2026-03-01', cp:249, fmt:'Hardcover' },
+		{ t:'Lessons in Chemistry', a:'Bonnie Garmus', g:'Fiction', isbn:'9780385547345', pg:400, r:0, stat:'Want to Read', da:_weeksAgo(10,1), fmt:'Hardcover' },
+		{ t:'The Seven Husbands of Evelyn Hugo', a:'Taylor Jenkins Reid', g:'Fiction', isbn:'9781501156717', pg:400, r:0, stat:'Want to Read', da:_weeksAgo(9,2), fmt:'Paperback' },
+		{ t:'Tomorrow, and Tomorrow, and Tomorrow', a:'Gabrielle Zevin', g:'Fiction', isbn:'9780593321201', pg:416, r:0, stat:'Want to Read', da:_weeksAgo(8,3), fmt:'Hardcover' },
+		{ t:'Happy Place', a:'Emily Henry', g:'Romance', isbn:'9780593441282', pg:400, r:0, stat:'Want to Read', da:_weeksAgo(7,2), fmt:'Paperback' },
+		{ t:'Fourth Wing', a:'Rebecca Yarros', g:'Fantasy', isbn:'9781649374042', pg:528, r:0, stat:'Reading', da:_weeksAgo(2,1), ds:'2026-04-08', cp:221, fmt:'Hardcover', ser:'The Empyrean', sn:1 },
+		{ t:'Demon Copperhead', a:'Barbara Kingsolver', g:'Fiction', isbn:'9780063251922', pg:560, r:0, stat:'Want to Read', da:_weeksAgo(6,0), fmt:'Hardcover' },
+		{ t:'The Covenant of Water', a:'Abraham Verghese', g:'Historical', isbn:'9780802162175', pg:736, r:0, stat:'Want to Read', da:_weeksAgo(5,4), fmt:'Hardcover' },
+		{ t:'Hell Bent', a:'Leigh Bardugo', g:'Fantasy', isbn:'9781250313072', pg:496, r:0, stat:'Want to Read', da:_weeksAgo(7,5), fmt:'Hardcover', ser:'Alex Stern', sn:2 },
+		{ t:'Babel', a:'R.F. Kuang', g:'Fantasy', isbn:'9780063021426', pg:560, r:0, stat:'Want to Read', da:_weeksAgo(11,5), fmt:'Hardcover' },
+		{ t:'Gone Girl', a:'Gillian Flynn', g:'Thriller', isbn:'9780307588364', pg:432, r:0, stat:'Want to Read', da:_weeksAgo(4,0), fmt:'Paperback' },
+		{ t:'The Women', a:'Kristin Hannah', g:'Historical', isbn:'9781250178619', pg:480, r:0, stat:'Want to Read', da:_weeksAgo(1,5), fmt:'Hardcover' },
+		{ t:'All the Light We Cannot See', a:'Anthony Doerr', g:'Historical', isbn:'9781501156700', pg:544, r:0, stat:'Want to Read', da:_weeksAgo(10,4), fmt:'Paperback' },
+		{ t:'The Hunger Games', a:'Suzanne Collins', g:'SciFi', isbn:'9780439023481', pg:374, r:0, stat:'Want to Read', da:_weeksAgo(9,0), fmt:'Paperback', ser:'The Hunger Games', sn:1 },
+		{ t:'Pachinko', a:'Min Jin Lee', g:'Historical', isbn:'9781455563920', pg:496, r:0, stat:'Want to Read', da:_weeksAgo(8,4), fmt:'Paperback' },
+		{ t:'The Sympathizer', a:'Viet Thanh Nguyen', g:'Fiction', isbn:'9780802123459', pg:384, r:0, stat:'Want to Read', da:_weeksAgo(6,2), fmt:'Paperback' },
+		{ t:'Remarkably Bright Creatures', a:'Shelby Van Pelt', g:'Fiction', isbn:'9780063204157', pg:368, r:0, stat:'Want to Read', da:_weeksAgo(5,0), fmt:'Hardcover' },
+		{ t:'Funny Story', a:'Emily Henry', g:'Romance', isbn:'9780593441299', pg:400, r:0, stat:'Reading', da:_weeksAgo(1,1), ds:'2026-04-14', cp:118, fmt:'Paperback' },
+		{ t:'Iron Flame', a:'Rebecca Yarros', g:'Fantasy', isbn:'9781649374066', pg:640, r:0, stat:'Reading', da:_weeksAgo(1,3), ds:'2026-04-11', cp:302, fmt:'Hardcover', ser:'The Empyrean', sn:2 },
+		{ t:'James', a:'Percival Everett', g:'Fiction', isbn:'9780385550369', pg:320, r:0, stat:'Want to Read', da:_weeksAgo(3,5), fmt:'Hardcover' },
+		{ t:'Parable of the Sower', a:'Octavia E. Butler', g:'SciFi', isbn:'9781538732182', pg:368, r:0, stat:'Want to Read', da:_weeksAgo(7,0), fmt:'Paperback', ser:'Earthseed', sn:1 },
+		{ t:'A Little Life', a:'Hanya Yanagihara', g:'Fiction', isbn:'9780804172707', pg:832, r:0, stat:'Want to Read', da:_weeksAgo(5,2), fmt:'Paperback' },
+		{ t:'The Night Circus', a:'Erin Morgenstern', g:'Fantasy', isbn:'9780385534635', pg:512, r:0, stat:'Want to Read', da:_weeksAgo(4,3), fmt:'Paperback' },
+		{ t:'The Nightingale', a:'Kristin Hannah', g:'Historical', isbn:'9781250080400', pg:608, r:0, stat:'Want to Read', da:_weeksAgo(8,1), fmt:'Paperback' },
+		{ t:'Sea of Tranquility', a:'Emily St. John Mandel', g:'SciFi', isbn:'9780593321447', pg:272, r:0, stat:'Want to Read', da:_weeksAgo(2,4), fmt:'Hardcover' },
+		{ t:'Station Eleven', a:'Emily St. John Mandel', g:'SciFi', isbn:'9780804172448', pg:352, r:0, stat:'Want to Read', da:_weeksAgo(11,0), fmt:'Paperback' },
+		{ t:'The Hobbit', a:'J.R.R. Tolkien', g:'Fantasy', isbn:'9780547928227', pg:300, r:0, stat:'Want to Read', da:_weeksAgo(3,2), fmt:'Paperback', ser:'Middle-earth', sn:0 },
+		{ t:'Dune', a:'Frank Herbert', g:'SciFi', isbn:'9780441172719', pg:896, r:0, stat:'Want to Read', da:_weeksAgo(6,5), fmt:'Paperback', ser:'Dune', sn:1 },
+		{ t:'The Martian', a:'Andy Weir', g:'SciFi', isbn:'9780553418026', pg:400, r:0, stat:'Want to Read', da:_weeksAgo(10,2), fmt:'Paperback' },
+		{ t:'The Book Thief', a:'Markus Zusak', g:'Historical', isbn:'9780375842207', pg:592, r:0, stat:'Want to Read', da:_weeksAgo(9,5), fmt:'Paperback' },
+		{ t:'The Giver', a:'Lois Lowry', g:'SciFi', isbn:'9780544336261', pg:240, r:0, stat:'Want to Read', da:_weeksAgo(2,0), fmt:'Paperback', ser:'The Giver Quartet', sn:1 },
+		{ t:'The Maid', a:'Nita Prose', g:'Mystery', isbn:'9780593356159', pg:320, r:0, stat:'Want to Read', da:_weeksAgo(7,1), fmt:'Hardcover', ser:'Molly the Maid', sn:1 },
+		{ t:'The Paris Apartment', a:'Lucy Foley', g:'Mystery', isbn:'9780063003057', pg:384, r:0, stat:'Want to Read', da:_weeksAgo(4,5), fmt:'Paperback' },
+		{ t:'None of This Is True', a:'Lisa Jewell', g:'Thriller', isbn:'9780593492918', pg:384, r:0, stat:'Reading', da:_weeksAgo(0,5), ds:'2026-04-18', cp:87, fmt:'Hardcover' },
+		{ t:'Pineapple Street', a:'Jenny Jackson', g:'Fiction', isbn:'9780593418482', pg:320, r:0, stat:'Want to Read', da:_weeksAgo(6,3), fmt:'Hardcover' },
+		{ t:'Yellowface', a:'R.F. Kuang', g:'Thriller', isbn:'9780063250833', pg:336, r:0, stat:'Want to Read', da:_weeksAgo(5,5), fmt:'Hardcover' },
+		{ t:'Just for the Summer', a:'Abby Jimenez', g:'Romance', isbn:'9781538704431', pg:432, r:0, stat:'Want to Read', da:_weeksAgo(1,0), fmt:'Paperback' },
+		{ t:'People We Meet on Vacation', a:'Emily Henry', g:'Romance', isbn:'9781984806758', pg:368, r:0, stat:'Want to Read', da:_weeksAgo(9,1), fmt:'Paperback' },
+		{ t:'Legends & Lattes', a:'Travis Baldree', g:'Fantasy', isbn:'9781250886088', pg:304, r:0, stat:'Want to Read', da:_weeksAgo(8,0), fmt:'Paperback' },
+		{ t:'The Great Gatsby', a:'F. Scott Fitzgerald', g:'Classics', isbn:'9780743273565', pg:180, r:0, stat:'Want to Read', da:_weeksAgo(7,4), fmt:'Paperback' },
+		{ t:'The Priory of the Orange Tree', a:'Samantha Shannon', g:'Fantasy', isbn:'9781635570298', pg:848, r:0, stat:'Want to Read', da:_weeksAgo(3,1), fmt:'Paperback' },
+		{ t:'The Fellowship of the Ring', a:'J.R.R. Tolkien', g:'Fantasy', isbn:'9780547928210', pg:432, r:0, stat:'Want to Read', da:_weeksAgo(11,4), fmt:'Paperback', ser:'The Lord of the Rings', sn:1 },
+		{ t:'The Two Towers', a:'J.R.R. Tolkien', g:'Fantasy', isbn:'9780547928203', pg:352, r:0, stat:'Want to Read', da:_weeksAgo(10,3), fmt:'Paperback', ser:'The Lord of the Rings', sn:2 },
+		{ t:'The Return of the King', a:'J.R.R. Tolkien', g:'Fantasy', isbn:'9780547928197', pg:416, r:0, stat:'Want to Read', da:_weeksAgo(9,3), fmt:'Paperback', ser:'The Lord of the Rings', sn:3 },
+		{ t:'The Maidens', a:'Alex Michaelides', g:'Thriller', isbn:'9781250304452', pg:352, r:0, stat:'Want to Read', da:_weeksAgo(0,1), fmt:'Hardcover' },
+		{ t:'The Alchemist', a:'Paulo Coelho', g:'Fiction', isbn:'9780061122415', pg:208, r:0, stat:'Want to Read', da:_weeksAgo(0,3), fmt:'Paperback' },
+		{ t:'The Great Alone', a:'Kristin Hannah', g:'Historical', isbn:'9781250165619', pg:448, r:0, stat:'Want to Read', da:_weeksAgo(0,4), fmt:'Paperback' }
 	];
+
+	if (existingTitles.length) {
+		var demoTitleSet = {};
+		demoBooks.forEach(function(b) { demoTitleSet[b.t] = true; });
+		var looksLikeOldDemo = existingTitles.length === 26 && existingTitles.every(function(t) { return !!demoTitleSet[t]; });
+		if (!looksLikeOldDemo) return;
+
+		// Replace the original demo-only library with the expanded catalog.
+		libSheet.getRange(
+			LIBRARY_DATA_ROW,
+			LIBRARY_DATA_COL,
+			lastRow - LIBRARY_DATA_ROW + 1,
+			LIBRARY_HEADERS.length
+		).clearContent();
+	}
 
 	var readingIds = [];
 	var rows = demoBooks.map(function(b) {
 		var bookId = _uuid();
 		if (b.stat === 'Reading') readingIds.push(bookId);
 		// Array order must match LIBRARY_HEADERS exactly:
-		// Title, Author, Status, Genre, Rating, Format, Pages, DateStarted, DateFinished,
-		// Series, SeriesNumber, Favorite, BookId, CoverUrl, CoverEmoji, Gradient1, Gradient2,
+		// Title, Author, Series, Status, Genre, Rating, Format, Pages, DateStarted, DateFinished,
+		// Favorite, SeriesNumber, BookId, CoverUrl, CoverEmoji, Gradient1, Gradient2,
 		// DateAdded, CurrentPage, TbrPriority, Source, SpiceLevel, Tags, Shelves, Notes,
 		// Review, Quotes, ISBN, OLID, AuthorKey
 		return [
 			b.t,                          // Title
 			b.a,                          // Author
+			(b.ser || '') + (b.sn && b.ser ? ' #' + b.sn : ''), // Series (visible, combined)
 			b.stat,                       // Status
 			b.g,                          // Genre
 			_numToStars(b.r),             // Rating (★ chip string)
 			b.fmt || 'Paperback',         // Format
 			b.pg,                         // Pages
-			b.ds || '',                   // DateStarted
+			b.ds || b.da || '',           // DateStarted
 			b.df || '',                   // DateFinished
-			'',                           // Series
-			'',                           // SeriesNumber
-			b.r === 5,                    // Favorite (checkbox — 5-star books start favorited)
-			bookId,                       // BookId (hidden)
-			'https://covers.openlibrary.org/b/isbn/' + b.isbn + '-L.jpg', // CoverUrl (hidden)
-			'BK',                         // CoverEmoji (hidden)
-			'',                           // Gradient1 (hidden)
-			'',                           // Gradient2 (hidden)
-			b.da || new Date().toISOString().slice(0, 10), // DateAdded (hidden)
-			b.cp || 0,                    // CurrentPage (hidden)
-			'',                           // TbrPriority (hidden)
-			'',                           // Source (hidden)
-			0,                            // SpiceLevel (hidden)
-			'',                           // Tags (hidden)
-			'',                           // Shelves (hidden)
-			'',                           // Notes (hidden)
-			'',                           // Review (hidden)
-			'',                           // Quotes (hidden)
-			b.isbn,                       // ISBN (hidden)
-			'',                           // OLID (hidden)
-			''                            // AuthorKey (hidden)
+			b.r === 5 ? '♥' : '',        // Favorite (visible) — ♥ for 5-star books
+			// Hidden columns below
+			b.sn  || '',                  // SeriesNumber
+			bookId,                       // BookId
+			'https://covers.openlibrary.org/b/isbn/' + b.isbn + '-L.jpg', // CoverUrl
+			'BK',                         // CoverEmoji
+			'',                           // Gradient1
+			'',                           // Gradient2
+			b.da || new Date().toISOString().slice(0, 10), // DateAdded
+			b.cp || 0,                    // CurrentPage
+			'',                           // TbrPriority
+			'',                           // Source
+			0,                            // SpiceLevel
+			'',                           // Tags
+			'',                           // Shelves
+			'',                           // Notes
+			'',                           // Review
+			'',                           // Quotes
+			b.isbn,                       // ISBN
+			'',                           // OLID
+			''                            // AuthorKey
 		];
 	});
 
@@ -1475,6 +2138,15 @@ function clientClearDemoData() {
 			});
 			profileSheet.getRange(2, 1, 1, PROFILE_HEADERS.length).setValues([pRow]);
 		}
+		// Rebuild the My Year dashboard so the sheet UI mirrors the now-empty web app state.
+		try {
+			var themeName = 'default';
+			if (profileSheet && profileSheet.getLastRow() >= 2) {
+				var thC = PROFILE_HEADERS.indexOf('Theme') + 1;
+				if (thC > 0) themeName = String(profileSheet.getRange(2, thC).getValue() || 'default');
+			}
+			_dbLiteInitMyYearSheet(ss, themeName);
+		} catch (myErr) { _log('warn', 'clientClearDemoData myYear rebuild', myErr); }
 		return { cleared: true };
 	} catch (e) { return { error: e.message }; }
 }
@@ -1851,6 +2523,35 @@ function installSyncTrigger() {
 //  MENU + FIRST-OPEN AUTO-SEED
 // =====================================================================
 
+function resetDemoData() {
+	var ui = SpreadsheetApp.getUi();
+	var resp = ui.alert(
+		'Reset Demo Data',
+		'This will DELETE all rows in the Library sheet and re-seed fresh demo books with the correct column order.\n\nContinue?',
+		ui.ButtonSet.OK_CANCEL
+	);
+	if (resp !== ui.Button.OK) return;
+
+	// 1. Clear the DEMO_CLEARED flag so _seedDemoData will run again.
+	PropertiesService.getScriptProperties().deleteProperty('DEMO_CLEARED');
+
+	// 2. Wipe all data rows (row 9 onward) in the Library sheet.
+	var libSheet = _ss().getSheetByName(SHEET_LIBRARY);
+	if (libSheet) {
+		var lastRow = libSheet.getLastRow();
+		if (lastRow >= LIBRARY_DATA_ROW) {
+			libSheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL, lastRow - LIBRARY_DATA_ROW + 1, LIBRARY_HEADERS.length)
+				.clearContent();
+		}
+	}
+
+	// 3. Re-seed and rebuild.
+	_seedDemoData();
+	_dbLiteInitializeSheets();
+
+	ui.alert('Done! Demo data has been reset with the correct column order.');
+}
+
 function onOpen() {
 	// Auto-init on every open — _seedDemoData() no-ops if the Library
 	// already has data, so this is safe + instant after the first run.
@@ -1863,7 +2564,8 @@ function onOpen() {
 			.addItem('Install Weekly NYT Refresh', 'installNYTWeeklyTrigger')
 			.addItem('Install Live Sync Trigger',  'installSyncTrigger')
 			.addSeparator()
-			.addItem('Rebuild Sheet Structure', 'initializeSheets');
+			.addItem('Rebuild Sheet Structure', 'initializeSheets')
+			.addItem('🔄 Reset Demo Data (fix column order)', 'resetDemoData');
 
 		ui.createMenu(_buildJourneyTitle())
 			.addItem('📖 Open Web App',           '_openWebApp')
@@ -1878,9 +2580,28 @@ function onOpen() {
 
 function _openWebApp() {
 	var url = ScriptApp.getService().getUrl();
-	var safeSrc = '<script>window.open(' + JSON.stringify(url) + ');google.script.host.close();\x3c/script>';
-	var html = HtmlService.createHtmlOutput(safeSrc).setWidth(1).setHeight(1);
-	SpreadsheetApp.getUi().showModalDialog(html, 'Opening...');
+	if (!url) {
+		SpreadsheetApp.getUi().alert(
+			'Web app not deployed yet.\n\n' +
+			'Go to Extensions → Apps Script → Deploy → New deployment,\n' +
+			'then choose "Web app" and click Deploy.\n\n' +
+			'After deploying, come back and try this menu item again.'
+		);
+		return;
+	}
+	// Use a clickable button instead of window.open() on load —
+	// modern browsers block auto-popups from dialogs (popup blocker).
+	var html = HtmlService.createHtmlOutput(
+		'<div style="font-family:Google Sans,Arial,sans-serif;padding:18px 20px;text-align:center;">' +
+		'<p style="margin:0 0 14px;color:#5f6368;font-size:13px;">Click below to open your Reading Journey:</p>' +
+		'<a href="' + url + '" target="_blank" style="text-decoration:none;">' +
+		'<button style="background:#1a73e8;color:#fff;border:none;border-radius:4px;' +
+		'padding:10px 28px;font-size:14px;cursor:pointer;font-family:inherit;">📖 Open Web App</button>' +
+		'</a>' +
+		'<p style="margin:14px 0 0;font-size:11px;color:#9aa0a6;">Opens in a new tab</p>' +
+		'</div>'
+	).setWidth(340).setHeight(130);
+	SpreadsheetApp.getUi().showModalDialog(html, 'My Reading Journey');
 }
 
 function _reStyleCurrentTheme() {

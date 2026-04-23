@@ -1,0 +1,524 @@
+# PageVault — Current + Roadmap API & Integration List
+# Free. No cost. Ever. Apps Script compatible.
+# Note: this file mixes shipped integrations with candidate roadmap items. Verify each item against Code.gs and index(3).html before using it in launch, sales, or customer-facing copy.
+
+---
+
+## GROUP A — EXTERNAL APIs (HTTP CALLS)
+These make fetch/UrlFetchApp calls to external services.
+
+---
+
+### 1. Open Library Search API
+**URL:** `https://openlibrary.org/search.json?q={query}`
+**Also:** `https://openlibrary.org/search.json?isbn={isbn}`
+**Also:** `https://openlibrary.org/search.json?title={title}&author={author}`
+
+**What you get back:**
+- Title, author, publisher
+- Page count (`number_of_pages_median`)
+- First publish year
+- Subjects / genres
+- Cover image ID
+- ISBNs (10 and 13)
+- Open Library work key (for deeper lookups)
+
+**Use case in PageVault:**
+Primary book search when user types a title or author. Auto-fills all book metadata when adding a new book. Zero setup for the buyer.
+
+**Key:** None
+**Rate limit:** None documented
+**Cost:** Free forever (Internet Archive non-profit)
+
+---
+
+### 2. Open Library Covers API
+**URL:** `https://covers.openlibrary.org/b/isbn/{ISBN}-L.jpg`
+**Also by cover ID:** `https://covers.openlibrary.org/b/id/{cover_id}-L.jpg`
+**Sizes:** `-S` (small) `-M` (medium) `-L` (large)
+
+**What you get back:**
+Direct JPG image. Drop straight into an `<img>` tag. No JSON parsing.
+
+**Use case in PageVault:**
+Every book card cover image. Primary cover source for all books. Works for any book that has ever been in the Open Library catalog — millions of titles. When a user adds a book by ISBN, the cover appears automatically.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 3. Open Library Work API (Book Detail)
+**URL:** `https://openlibrary.org/works/{work_key}.json`
+Example: `https://openlibrary.org/works/OL27448W.json`
+
+**What you get back:**
+- Full book description
+- Subjects array (genres, topics)
+- Cover IDs
+- First publish date
+- Links to author records
+
+**Use case in PageVault:**
+Book detail modal — the expanded view when a user taps a book card. Pulls the full description paragraph. Also used to populate the genre/subject tags on each book.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 4. Open Library Author API
+**URL:** `https://openlibrary.org/authors/{author_key}.json`
+**Author photo:** `https://covers.openlibrary.org/a/olid/{author_olid}-M.jpg`
+
+**What you get back:**
+- Author name, bio, birth date, death date
+- Author photo URL
+- Works list
+
+**Use case in PageVault:**
+Author detail view — tap an author name to see their photo, bio, and other books in the user's library by that author. Adds depth without any setup.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 5. Open Library Read API (Free Ebook Check)
+**URL:** `https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&jscmd=viewapi&format=json`
+
+**What you get back:**
+- `preview` field: `"full"` `"limited"` or `"noview"`
+- `read_url` — direct link to read online if available
+- `thumbnail_url`
+
+**Use case in PageVault:**
+Automatic "📖 Read free online" badge on any book in the user's library that's available to read legally for free through Internet Archive. Surfaces free ebooks the user didn't know existed. One fetch per book, cached locally.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 6. LibriVox API
+**URL:** `https://librivox.org/api/feed/audiobooks?title={title}&format=json&extended=1`
+**Also:** `https://librivox.org/api/feed/audiobooks?author={author}&format=json&extended=1`
+
+**What you get back:**
+- Title, author, total time
+- URL to book page
+- `sections` array — each chapter with its direct MP3 URL
+- Cover art URL
+
+**Use case in PageVault:**
+"Free Classics" audio tab. When a user taps the audio icon on a book, check LibriVox first. If found, stream the MP3 directly in the existing audio player — skip 15s, speed control, sleep timer, chapter list all work. Full plays of Sherlock Holmes, Dracula, Pride & Prejudice, Frankenstein, 20,000 Leagues — 20,000+ titles.
+
+**Key:** None
+**Cost:** Free forever (volunteer non-profit)
+
+---
+
+### 7. Internet Archive Audio Search API
+**URL:** `https://archive.org/advancedsearch.php?q={title}+mediatype:audio&fl[]=identifier,title,creator,description&output=json`
+**Stream:** `https://archive.org/download/{identifier}/{filename}.mp3`
+
+**What you get back:**
+- Identifiers for audio items
+- Title, creator, description
+- Direct stream URLs for MP3 files
+
+**Use case in PageVault:**
+Secondary audio source alongside LibriVox. Covers donated recordings, old radio dramas, some modern works uploaded by their authors, vintage non-fiction. Run this search in parallel with LibriVox and merge results. Together they cover ~30,000 listenable titles.
+
+**Key:** None
+**Cost:** Free forever (Internet Archive non-profit)
+
+---
+
+### 8. NYT Books API — Bestseller Lists
+**URL:** `https://api.nytimes.com/svc/books/v3/lists/current/{list-name}.json?api-key={KEY}`
+
+**Available lists (sample):**
+- `hardcover-fiction`
+- `hardcover-nonfiction`
+- `young-adult-hardcover`
+- `paperback-nonfiction`
+- `childrens-middle-grade-hardcover`
+- `graphic-books-and-manga`
+- `science`
+- `business-books`
+
+**All list names endpoint:** `https://api.nytimes.com/svc/books/v3/lists/names.json?api-key={KEY}`
+
+**Historical lookup by ISBN:** `https://api.nytimes.com/svc/books/v3/lists/best-sellers/history.json?isbn={isbn}&api-key={KEY}`
+
+**What you get back:**
+- Rank (current and last week)
+- Weeks on list
+- Title, author, publisher, description
+- ISBNs (10 and 13)
+- Amazon URL, book image URL
+
+**Use case in PageVault:**
+Server-side in Code.gs. A weekly time-based trigger fetches all major lists, extracts every ISBN, and caches the full NYT data in PropertiesService. When getDashboardData() runs, it cross-references the user's library ISBNs against the cache. Books that match get a badge: "📰 #3 NYT Fiction · 12 weeks". No user action required. Feels automatic and magical.
+
+**Architecture note:** The API key lives in Code.gs on YOUR account (the Library stub model). Buyers never see it, never need one, never interact with it. This is the key advantage of the Apps Script Library deployment — your keys are server-side and invisible.
+
+**Key:** Free. Register at developer.nytimes.com — email only, no credit card, no billing.
+**Rate limit:** 500 req/day, 5/min. Weekly fetch of ~10 lists = ~10 requests/week. Nowhere near the limit.
+**Cost:** Free forever
+
+---
+
+## GROUP B — BROWSER NATIVE APIs
+These are built into every modern browser. No server, no key, no fetch call.
+
+---
+
+### 9. MediaDevices API — Camera (ISBN Barcode Scanner)
+**How it works:**
+```javascript
+const stream = await navigator.mediaDevices.getUserMedia({
+  video: { facingMode: { ideal: "environment" } }
+});
+```
+Combined with the ZXing-js library (loaded via CDN):
+```html
+<script src="https://unpkg.com/@zxing/browser@latest"></script>
+```
+
+**What you get:**
+Live camera feed decoded in real time. Point phone at any book's barcode → ISBN appears instantly → auto-search Open Library → book added with full metadata and cover.
+
+**Use case in PageVault:**
+Camera icon button in the Add Book modal. User taps it, camera activates, they scan the back of any physical book. The most satisfying UX moment in the entire app. StoryGraph has this only in their native mobile app. PageVault is first to do it in a browser.
+
+**Key:** None
+**Cost:** Free forever
+**Library:** ZXing-js — Apache 2.0 open source, loaded from unpkg CDN
+
+---
+
+### 10. Web Share API
+**How it works:**
+```javascript
+await navigator.share({
+  title: 'My 2026 Reading Wrapped',
+  text: 'I read 47 books this year 📚',
+  files: [pngFile]  // canvas → blob → file
+});
+```
+
+**What you get:**
+Native OS share sheet. Pops up the same sheet the user sees when sharing a photo from their camera roll. Shares to Instagram Stories, WhatsApp, iMessage, Twitter, email — whatever the user has installed.
+
+**Use case in PageVault:**
+Share button on the Wrapped overlay. User hits share, their Wrapped card (rendered as a canvas PNG) goes directly to social media. Turns a private personal stat into organic word-of-mouth. Every shared Wrapped card is a free PageVault advertisement.
+
+**Key:** None
+**Cost:** Free forever
+**Support:** All modern mobile browsers
+
+---
+
+### 11. Web Notifications API + Service Worker
+**How it works:**
+```javascript
+// Request once
+Notification.requestPermission();
+
+// In service worker — fires even when app is closed
+self.registration.showNotification('Time to read! 📖', {
+  body: "3 days since your last session. Keep your streak alive.",
+  icon: '/icon-192.png'
+});
+```
+
+**What you get:**
+Real browser push notifications. Delivered even when the browser is closed (on mobile). No server, no push service, scheduled entirely client-side with the Service Worker.
+
+**Use case in PageVault:**
+Reading streak reminders. Daily goal nudges. "You're 2 books away from your annual goal!" alerts. This is what wires up the three preference checkboxes (Daily Reminder, Weekly Summary, etc.) that currently do nothing in the app. They'll now actually work.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 12. PWA Manifest + Service Worker (Install as App)
+**How it works:**
+Add to `<head>`:
+```html
+<link rel="manifest" href="manifest.json">
+```
+manifest.json:
+```json
+{
+  "name": "PageVault",
+  "short_name": "PageVault",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#ff6b9d",
+  "background_color": "#fff1f7",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
+```
+
+**What you get:**
+PageVault installs to the user's phone home screen like a native app. Tap the icon, it opens full screen with no browser chrome. Custom splash screen, custom icon. Works offline (service worker caches the app shell). No App Store. No approval. No updates to submit.
+
+**Use case in PageVault:**
+On mobile, browser shows "Add to Home Screen" prompt automatically after a few visits. User taps it and PageVault becomes a proper app. This is a headline feature for the Etsy listing: "Installs as an app on your phone." No competitor tracker sold on Etsy can say this.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 13. Clipboard API
+**How it works:**
+```javascript
+await navigator.clipboard.writeText(text);
+// For images:
+await navigator.clipboard.write([
+  new ClipboardItem({ 'image/png': blob })
+]);
+```
+
+**What you get:**
+One-click copy to clipboard for any text or image.
+
+**Use case in PageVault:**
+"Copy stats" button on Wrapped card. "Copy ISBN" on book detail (for pasting into wishlists, etc.). "Copy reading list" as formatted text to paste into a message or email. Small feature, high satisfaction.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 14. IndexedDB (via idb library)
+**CDN:** `https://cdn.jsdelivr.net/npm/idb@7/build/umd.js`
+
+**What you get:**
+A proper structured local database in the browser. Handles thousands of records without performance issues. Survives browser refreshes. Supports indexing and complex queries. Significantly more reliable than localStorage.
+
+**Use case in PageVault:**
+Replace the current localStorage-based data store. The existing approach works up to maybe 300-400 books before it starts to lag. IndexedDB handles 50,000+ entries cleanly. Critical for heavy readers with large libraries. The idb library wraps IndexedDB in a clean promise-based API — about 20 lines to set up.
+
+**Key:** None
+**Cost:** Free forever
+**Library:** idb — MIT license
+
+---
+
+## GROUP C — DEEP LINKS & URL CONSTRUCTIONS
+These are URL strings. No API call, no key, no rate limit, works 100% of the time.
+
+---
+
+### 15. WorldCat Library Finder
+**URL pattern:**
+```
+https://www.worldcat.org/search?q=isbn:{ISBN}
+https://www.worldcat.org/search?q={title}+{author}
+```
+
+**What you get:**
+Opens WorldCat showing which libraries near the user have that book available. WorldCat searches 10,000+ library systems worldwide.
+
+**Use case in PageVault:**
+"📚 Find at my library" button on every book card. One of the most powerful features in the entire app — and it's one line of code. No other book tracker has this built in. Serves the enormous audience of readers who borrow rather than buy. Completely free, no setup, works globally.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 16. YouTube Audiobook Deep Link
+**URL pattern:**
+```
+https://youtube.com/results?search_query={title}+{author}+full+audiobook
+```
+
+**What you get:**
+Drops the user directly into YouTube search results filtered for that book's audiobook. YouTube has thousands of legally uploaded full audiobooks — modern titles, author readings, publisher-uploaded content.
+
+**Use case in PageVault:**
+Fallback audio option for every book. When LibriVox and Internet Archive have no match (modern commercial titles), "🎧 Find on YouTube" button opens this search. Catches everything the free audio APIs miss. Zero API, zero setup, zero maintenance.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 17. OverDrive / Libby Library Borrow Link
+**URL pattern:**
+```
+https://libbyapp.com/search/{library-name}/everywhere/page-1/{query}
+```
+
+**What you get:**
+Opens Libby (the library borrowing app) searching for the ebook or audiobook version of a book at the user's library. Most modern public libraries participate. Users can borrow ebooks and audiobooks completely free.
+
+**Use case in PageVault:**
+"Borrow free from library (Libby)" button on book cards. User enters their library system name once in Settings (e.g., "NYPL" or "Los Angeles Public Library"). PageVault constructs the Libby search URL automatically for any book they tap. Massive value for library users — modern audiobooks free, zero Spotify required.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 18. Bookshop.org Link (+ optional affiliate)
+**URL pattern:**
+```
+https://bookshop.org/p/books/{title-slug}/{isbn}
+https://bookshop.org/search?keywords={title}
+```
+**With affiliate ID:**
+```
+https://bookshop.org/a/{AFFILIATE_ID}/p/books/{isbn}
+```
+
+**What you get:**
+Buy button linking to indie bookstores through Bookshop.org. Just partnered with Spotify (Feb 2026). Affiliate program pays 10% commission — buyer can set their OWN affiliate ID in PageVault settings and earn on every purchase they make through their own tracker.
+
+**Use case in PageVault:**
+"🛒 Buy (support indie bookstores)" button on every book card. Optional affiliate ID field in Settings. This is a selling point for your Etsy listing: "Earn commission on books you buy through your own tracker."
+
+**Key:** None (affiliate ID optional, free to get at bookshop.org/affiliates)
+**Cost:** Free forever — earns money, never costs it
+
+---
+
+### 19. Amazon Book Link
+**URL pattern:**
+```
+https://www.amazon.com/dp/{ISBN10}
+https://www.amazon.com/s?k={title}+{author}&i=stripbooks
+```
+**With Associates tag (optional):**
+```
+https://www.amazon.com/dp/{ISBN10}?tag={associates_tag}
+```
+
+**What you get:**
+Secondary buy button for Amazon. Optional Amazon Associates affiliate tag earns commission.
+
+**Use case in PageVault:**
+Alternative to Bookshop.org. Some users prefer Amazon. Offer both. User can set their own Associates tag in settings.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 20. Goodreads Review Deep Link
+**URL pattern:**
+```
+https://www.goodreads.com/search?q={isbn}
+https://www.goodreads.com/book/isbn/{isbn}
+```
+
+**What you get:**
+Opens the Goodreads page for that exact book — community reviews, ratings, popular shelves.
+
+**Use case in PageVault:**
+"View reviews on Goodreads" link in book detail modal. Readers who want community reviews can jump there instantly. You're not competing with Goodreads reviews — you're linking out to them. Makes PageVault feel like a hub, not an island.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 21. StoryGraph Deep Link
+**URL pattern:**
+```
+https://app.thestorygraph.com/search?search_term={title}
+```
+
+**What you get:**
+Opens StoryGraph search for the book. Mood tags, pace ratings, content warnings — data that PageVault doesn't have but StoryGraph does.
+
+**Use case in PageVault:**
+"View on StoryGraph" link alongside the Goodreads link. Serves readers who've migrated from Goodreads. Shows you know your audience.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+## GROUP D — DATA IMPORT (CLIENT-SIDE PARSING)
+No external calls. Files are processed entirely in the browser.
+
+---
+
+### 22. Goodreads CSV Import
+**Library:** PapaParse (MIT license)
+**CDN:** `https://cdn.jsdelivr.net/npm/papaparse@5/papaparse.min.js`
+
+**What you get:**
+Parse the CSV export from Goodreads (My Books → Import/Export). Columns include: Title, Author, ISBN, My Rating, Average Rating, Publisher, Date Read, Date Added, Bookshelves, My Review.
+
+**Use case in PageVault:**
+File upload in the Import modal. User downloads their Goodreads export, uploads it to PageVault, their entire reading history — years of books, ratings, dates, shelves — imports instantly. Critical for converting the Goodreads audience. Readers with 5 years of logged history will not switch to a tracker that can't import it.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+### 23. StoryGraph CSV Import
+**Library:** PapaParse (same as above)
+
+**What you get:**
+Parse StoryGraph's export format. Includes: Title, Author, Read Status, Star Rating, Review, Tags, Pace, Mood, Genres, Dates.
+
+**Use case in PageVault:**
+Same file upload flow as Goodreads. Auto-detect which format based on column headers. StoryGraph is the fastest growing Goodreads alternative in 2026 — a meaningful slice of your potential buyers are already there with years of data they want to bring over.
+
+**Key:** None
+**Cost:** Free forever
+
+---
+
+## MASTER SUMMARY
+
+| # | Name | Type | Key | Use in PageVault |
+|---|------|------|-----|-----------------|
+| 1 | Open Library Search | HTTP API | None | Book search, metadata auto-fill |
+| 2 | Open Library Covers | HTTP API | None | Book cover images |
+| 3 | Open Library Work | HTTP API | None | Descriptions, subjects |
+| 4 | Open Library Author | HTTP API | None | Author bios + photos |
+| 5 | Open Library Read API | HTTP API | None | Free ebook badge |
+| 6 | LibriVox | HTTP API | None | Free classic audiobooks, full streaming |
+| 7 | Internet Archive Audio | HTTP API | None | Extended free audio catalog |
+| 8 | NYT Books API | HTTP API | Free key (no card) | Bestseller badges, auto-matched |
+| 9 | ZXing-js (barcode) | Browser + CDN lib | None | ISBN camera scanner |
+| 10 | Web Share API | Browser native | None | Share Wrapped card to social |
+| 11 | Web Notifications | Browser native | None | Reading streak reminders |
+| 12 | PWA Manifest + SW | Browser native | None | Install as app, offline mode |
+| 13 | Clipboard API | Browser native | None | Copy stats, ISBNs, lists |
+| 14 | IndexedDB / idb | Browser native + CDN | None | Robust local database |
+| 15 | WorldCat Deep Link | URL construction | None | Find at library button |
+| 16 | YouTube Deep Link | URL construction | None | Audiobook fallback search |
+| 17 | OverDrive / Libby Link | URL construction | None | Borrow from library button |
+| 18 | Bookshop.org Link | URL construction | None (affiliate optional) | Buy indie, earn commission |
+| 19 | Amazon Link | URL construction | None (affiliate optional) | Buy on Amazon button |
+| 20 | Goodreads Link | URL construction | None | View community reviews |
+| 21 | StoryGraph Link | URL construction | None | View StoryGraph page |
+| 22 | Goodreads CSV Import | Client-side parsing | None | Import full reading history |
+| 23 | StoryGraph CSV Import | Client-side parsing | None | Import full reading history |
+
+**Total APIs and integrations: 23**
+**Total cost to you: $0**
+**Total cost to buyers: $0**
+**APIs requiring any key: 1 (NYT — free email registration, no card)**
+**APIs exposing buyer to any setup: 0**
+**APIs that could ever generate a bill: 0**
+
+---
+
+*PageVault Final API Reference — April 2026*

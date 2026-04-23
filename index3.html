@@ -12437,7 +12437,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
           var prog  = (b.status === 'reading' && b.pages)
             ? '<span style="color:#6b7280;font-size:10px;">' + b.currentPage + '/' + b.pages + ' pages (' + Math.round((b.currentPage/b.pages)*100) + '%)</span>'
             : '';
-          var meta = [b.genre, b.format, b.series ? b.series + (b.seriesNumber ? ' #'+b.seriesNumber : '') : ''].filter(Boolean).join(' · ');
+          var meta = [b.genre, b.format, b.series || ''].filter(Boolean).join(' · ');
           var notes = b.notes ? '<div style="font-size:10px;color:#374151;margin-top:4px;font-style:italic;">' + esc(b.notes.slice(0,160)) + (b.notes.length>160?'…':'') + '</div>' : '';
           var review= b.review ? '<div style="font-size:10px;color:#374151;margin-top:2px;">' + esc(b.review).slice(0,200) + (b.review.length>200?'…':'') + '</div>' : '';
           var grad  = 'linear-gradient(135deg,' + _safeColor((b.gradient||['#F472B6','#F43F5E'])[0]) + ',' + _safeColor((b.gradient||['#F472B6','#F43F5E'])[1]) + ')';
@@ -12628,7 +12628,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       var bookRows = books.map(function(b) {
         var stars = b.rating ? '★'.repeat(b.rating) + '☆'.repeat(5 - b.rating) : '';
         var grad = 'linear-gradient(135deg,' + _safeColor((b.gradient||['#F472B6','#F43F5E'])[0]) + ',' + _safeColor((b.gradient||['#F472B6','#F43F5E'])[1]) + ')';
-        var meta = [b.genre, b.series ? b.series + (b.seriesNumber ? ' #'+b.seriesNumber : '') : '', b.format].filter(Boolean).join(' · ');
+        var meta = [b.genre, b.series || '', b.format].filter(Boolean).join(' · ');
         var review = b.review ? '<div style="font-size:11px;color:#4b5563;margin-top:4px;font-style:italic;">"' + esc(b.review).slice(0,200) + (b.review.length > 200 ? '…"' : '"') + '</div>' : '';
         return '<tr>'+
           '<td style="padding:12px 8px;border-bottom:1px solid #f3f4f6;width:46px;">'+
@@ -13219,7 +13219,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       var metaItems = [];
       if (book.genre) metaItems.push({l:'Genre', v:esc(book.genre)});
       if (book.pages) metaItems.push({l:'Pages', v:book.pages});
-      if (book.series) metaItems.push({l:'Series', v:esc(book.series + (book.seriesNumber ? ' #' + book.seriesNumber : ''))});
+      if (book.series) metaItems.push({l:'Series', v:esc(book.series)});
       if (book.format) metaItems.push({l:'Format', v:esc(book.format)});
       if (book.source) metaItems.push({l:'Source', v:esc(book.source)});
       if (book.dateAdded) metaItems.push({l:'Added', v:new Date(book.dateAdded).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})});
@@ -13535,8 +13535,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
                 '<label>Status<select id="bookFormStatus">' + statusOpts + '</select></label>' +
               '</div>' +
               '<div class="book-form-row-3">' +
-                '<label>Series Name<input id="bookFormSeries" type="text" placeholder="e.g. ACOTAR" value="' + esc(book && book.series ? book.series : '') + '" /></label>' +
-                '<label>Book # in Series<input id="bookFormSeriesNum" type="number" min="1" placeholder="1" value="' + (book && book.seriesNumber ? book.seriesNumber : '') + '" /></label>' +
+                '<label>Series Name<input id="bookFormSeries" type="text" placeholder="e.g. ACOTAR" value="' + esc(book && book.series ? book.series.replace(/\s+#\d+$/, '') : '') + '" /></label>' +
+                '<label>Book # in Series<input id="bookFormSeriesNum" type="number" min="1" placeholder="1" value="' + (book && book.seriesNumber ? book.seriesNumber : (book && book.series && book.series.match(/#(\d+)$/) ? book.series.match(/#(\d+)$/)[1] : '')) + '" /></label>' +
                 '<label>TBR Priority<input id="bookFormPriority" type="number" placeholder="0=none" min="0" value="' + (book && book.tbrPriority ? book.tbrPriority : '') + '" /></label>' +
               '</div>' +
               '<div class="book-form-row-3">' +
@@ -16025,7 +16025,9 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
           var gradient = state._formGradient || ['#F472B6', '#F43F5E'];
           var coverUrl = (document.getElementById('bookFormCoverUrl').value || '').trim();
           var series = (document.getElementById('bookFormSeries').value || '').trim();
-          var seriesNumber = parseInt(document.getElementById('bookFormSeriesNum').value) || null;
+          var _serMtch = series.match(/^(.+?)\s+#(\d+)$/);
+          var seriesNumber = parseInt(document.getElementById('bookFormSeriesNum').value) || (_serMtch ? parseInt(_serMtch[2]) : null);
+          if (_serMtch) series = _serMtch[1].trim();
           var tbrPriority = parseInt(document.getElementById('bookFormPriority').value) || 0;
           var format = document.getElementById('bookFormFormat').value;
           var source = document.getElementById('bookFormSource').value;
