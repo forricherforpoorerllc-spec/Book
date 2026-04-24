@@ -5919,6 +5919,7 @@
         </div>
       </div>
       <div id="headerCoversToggleSlot"></div>
+      <button class="sync-btn" id="syncFromSheetBtn" type="button" title="Sync from Google Sheet" style="display:none;background:none;border:1.5px solid var(--card-border);border-radius:8px;padding:5px 10px;cursor:pointer;color:var(--text-2);font-size:0.82rem;transition:all 0.2s;white-space:nowrap;" onclick="return false;"><i data-lucide="refresh-cw" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;"></i>Sync</button>
       <div class="stats-row" id="headerStats"></div>
     </div>
   </header>
@@ -18222,6 +18223,9 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
         .then(function(data) {
           hydrateFromBackend(data);
           fullRender();
+          // Show sync button now that backend is confirmed
+          var syncBtn = document.getElementById('syncFromSheetBtn');
+          if (syncBtn) syncBtn.style.display = '';
           return restoreAudiobookPlayback(state.currentAudioId);
         })
         .catch(function(err) {
@@ -18246,6 +18250,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
         serverRun('clientGetSyncVersion')
           .then(function(version) {
             if (_lastSyncVersion < 0) {
+              // First check — just record the baseline
               _lastSyncVersion = version;
               return;
             }
@@ -18258,16 +18263,36 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       }, 60000);
     })();
 
+    // ── Sync button click handler ──────────────────────────────────────────
+    (function initSyncButton() {
+      var btn = document.getElementById('syncFromSheetBtn');
+      if (!btn) return;
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+        refreshFromServer()
+          .then(function() { showToast('✅ Synced from Google Sheet', 'success'); })
+          .catch(function() { showToast('⚠️ Sync failed — try again', 'error'); })
+          .then(function() { btn.disabled = false; btn.style.opacity = '1'; });
+      });
+    })();
+
     window.addEventListener('resize', syncMobileLayoutMetrics);
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', syncMobileLayoutMetrics);
     }
 
     // Re-render date-dependent views when the tab regains focus on a new day
+    // AND refresh data from server when switching back (sheet→webapp sync)
     (function initDateChangeGuard() {
       var _lastRenderedDate = new Date().toISOString().slice(0, 10);
       document.addEventListener('visibilitychange', function() {
         if (document.visibilityState !== 'visible') return;
+
+        // Always refresh from server when tab regains focus (catches sheet edits)
+        refreshFromServer();
+
         var today = new Date().toISOString().slice(0, 10);
         if (today !== _lastRenderedDate) {
           _lastRenderedDate = today;

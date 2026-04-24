@@ -5,29 +5,33 @@
  *  My Reading Journey template (Etsy release).
  *
  *  WHAT THIS FILE DOES:
- *  - Serves the web app (doGet → index.html)
+ *  - Serves the web app (doGet → index.html / index2.html / index3.html)
  *  - Owns all sheet constants & schema
  *  - Builds the visible Library tab to match the product screenshot:
- *      Row 1 = merged "📚 LIBRARY ▾" title chip
- *      Row 2 = column headers with icon glyphs
- *      Row 3+ = data rows (no cover images, normal ~32px rows)
+ *      Rows 1–7 = banner (image + title). Row 8 = column headers. Row 9+ = data.
  *  - Keeps every utility sheet hidden (Challenges, Shelves, Profile, Audiobooks)
  *  - Seeds 72 demo books automatically on first open
  *  - Exposes the full client* API surface used by index.html / index2.html / index3.html
  *
+ *  PRODUCTS:
+ *  - Product 1 (index.html)  → Romantic theme (pink/red)   — set PRODUCT_VARIANT = 'index'
+ *  - Product 2 (index2.html) → Horizon theme  (blue)       — set PRODUCT_VARIANT = 'index2'
+ *  - Product 3 (index3.html) → Blossom theme  (mauve)      — set PRODUCT_VARIANT = 'index3'
+ *
  *  DEPLOY:
- *  - Extensions → Apps Script → paste this file → Save
- *  - Delete any older Code.gs if present (all runtime now lives here)
- *  - Run initializeSheets() once from the menu to build the sheet + seed demo
- *  - Deploy → New deployment → Web app → Execute as *me*, access Anyone
- *  - (Optional) Menu → Install Sync Trigger  for live sheet↔web-app sync
+ *  1. Extensions → Apps Script → paste this file → Save
+ *  2. Set PRODUCT_VARIANT below to match the product you're distributing
+ *  3. Delete any older Code.gs if present (all runtime now lives here)
+ *  4. Run initializeSheets() once from the menu to build the sheet + seed demo
+ *  5. Deploy → New deployment → Web app → Execute as *me*, access Anyone
+ *  6. (Optional) Menu → Install Sync Trigger  for live sheet↔web-app sync
  * ===================================================================== */
 
 function _dbLiteInitializeSheets() {
-	// Migrate old default theme: 'blossom' (pink) → 'romantic' (red) the first time we run.
-	// Users who explicitly picked blossom later will stay on blossom.
+	// Migrate old default theme: only for Product 1 — 'blossom' (pink) → 'romantic' (red).
+	// Scoped to PRODUCT_VARIANT 'index' so Product 3 (blossom) is never affected.
 	var props = PropertiesService.getScriptProperties();
-	if (props.getProperty('DEFAULT_THEME_MIGRATED_V2') !== '1') {
+	if (PRODUCT_VARIANT === 'index' && props.getProperty('DEFAULT_THEME_MIGRATED_V2') !== '1') {
 		try {
 			var pSheet = _ss().getSheetByName(SHEET_PROFILE);
 			if (pSheet && pSheet.getLastRow() >= 2) {
@@ -39,7 +43,6 @@ function _dbLiteInitializeSheets() {
 		props.setProperty('DEFAULT_THEME_MIGRATED_V2', '1');
 	}
 
-	var theme = _getCurrentTheme();
 	var ss = _ss();
 
 	// Ensure core data sheets exist with correct headers.
@@ -49,7 +52,11 @@ function _dbLiteInitializeSheets() {
 	var profile = _getOrCreateSheet(SHEET_PROFILE, PROFILE_HEADERS);
 	_getOrCreateSheet(SHEET_AUDIOBOOKS, AUDIOBOOK_HEADERS);
 
+	// Seed profile defaults FIRST so that _getCurrentTheme() reads the correct
+	// product-specific theme (horizon/blossom) rather than falling back to 'romantic'.
 	_dbLiteEnsureProfileDefaults(profile);
+
+	var theme = _getCurrentTheme();
 	_dbLiteInitLibrarySheet(library, theme);
 
 	// Style hidden data tabs with the theme palette header so they look intentional if unhidden.
@@ -134,7 +141,7 @@ function _dbLiteEnsureProfileDefaults(sheet) {
 			case 'Name': return '';
 			case 'Motto': return 'A focused place to track every book';
 			case 'PhotoData': return '';
-			case 'Theme': return 'romantic';
+			case 'Theme': return _VIEW_THEME_MAP[PRODUCT_VARIANT] || PropertiesService.getScriptProperties().getProperty('PRODUCT_DEFAULT_THEME') || 'romantic';
 			case 'YearlyGoal': return 50;
 			case 'Onboarded': return false;
 			case 'DemoCleared': return false;
@@ -192,9 +199,22 @@ function _dbLiteArrangeTabs(ss) {
 }
 
 function _dbLiteUpsertLibraryBannerImage(sheet) {
+	// Banner is fully optional. The Library banner already renders beautifully
+	// without an image (themed background + large "Reading _ / LIBRARY _" text).
+	// Buyers can OPTIONALLY add their own banner by:
+	//   1. Uploading an image to their own Drive
+	//   2. Project Settings → Script Properties → add BANNER_IMAGE_FILE_ID = <the file id>
+	// If unset (the default), we skip image insertion entirely — no failure mode,
+	// no permissions issue, no silent image deletion.
 	if (!sheet) return;
-	var fileId = '1ZSsQOovDedtBgcDekBhoqrNJYV_ZQypF';
+	var fileId = '';
+	try { fileId = PropertiesService.getScriptProperties().getProperty('BANNER_IMAGE_FILE_ID') || ''; } catch (e) {}
+	if (!fileId) return;
+	var blob = null;
+	try { blob = DriveApp.getFileById(fileId).getBlob(); } catch (e) { return; }
+	if (!blob) return;
 	try {
+		// Only remove OUR previously-inserted banner (anchored in rows 1-6, cols 1-6).
 		var images = sheet.getImages();
 		images.forEach(function(img) {
 			try {
@@ -202,8 +222,6 @@ function _dbLiteUpsertLibraryBannerImage(sheet) {
 				if (anchor && anchor.getRow() <= 6 && anchor.getColumn() <= 6) img.remove();
 			} catch (e) {}
 		});
-
-		var blob = DriveApp.getFileById(fileId).getBlob();
 		var image = sheet.insertImage(blob, 1, 1, 14, 8);
 		image.setWidth(470);
 		image.setHeight(180);
@@ -1094,10 +1112,29 @@ function _dbLiteApplyPillFormatting(sheet) {
  *  done — no second .gs file required.
  * ===================================================================== */
 
+/* =====================================================================
+ *  PRODUCT VARIANT — set this before distributing each product template.
+ *  'index'  → Product 1: Romantic  (pink/red)
+ *  'index2' → Product 2: Horizon   (blue)
+ *  'index3' → Product 3: Blossom   (mauve)
+ * ===================================================================== */
+var PRODUCT_VARIANT = 'index';
+
+// ── View → default theme mapping (set once on first open per deployment) ──
+var _VIEW_THEME_MAP = { 'index': 'romantic', 'index2': 'horizon', 'index3': 'blossom' };
+
 // ── Serve the UI ────────────────────────────────────────────────────────
 function doGet(e) {
+	var view = _resolveWebAppView(e);
+	// Seed the product-specific default theme once on first access so the sheet
+	// initialises with the right palette for this product variant.
+	var props = PropertiesService.getScriptProperties();
+	if (!props.getProperty('PRODUCT_THEME_SEEDED')) {
+		props.setProperty('PRODUCT_DEFAULT_THEME', _VIEW_THEME_MAP[view] || 'romantic');
+		props.setProperty('PRODUCT_THEME_SEEDED', '1');
+	}
 	var title = _buildJourneyTitle();
-	var output = HtmlService.createHtmlOutputFromFile(_resolveWebAppView(e))
+	var output = HtmlService.createHtmlOutputFromFile(view)
 		.setTitle(title)
 		.addMetaTag('viewport', 'width=device-width, initial-scale=1');
 	try {
@@ -1185,37 +1222,41 @@ var AUDIOBOOK_HEADERS = [
 
 // ── Theme palettes (drive sheet tab + title chip colors) ────────────────
 var THEME_PALETTES = {
-	romantic:  { header: '#B91C1C', headerText: '#FFFFFF', accent: '#DC2626', border: '#FCA5A5' },
+	// Product 1 (index.html) — romantic / pink-red
+	romantic:  { header: '#C81464', headerText: '#FFFFFF', accent: '#DC2626', border: '#FCA5A5' },
 	spicy:     { header: '#8F001F', headerText: '#FFE4E8', accent: '#FF4D4D', border: '#5A001A' },
-	dreamy:    { header: '#8B5CF6', headerText: '#FFFFFF', accent: '#A78BFA', border: '#DDD6FE' },
-	fresh:     { header: '#10B981', headerText: '#FFFFFF', accent: '#34D399', border: '#A7F3D0' },
-	midnight:  { header: '#312E81', headerText: '#E0E7FF', accent: '#818CF8', border: '#334155' },
-	sunset:    { header: '#1A0525', headerText: '#FFF0F5', accent: '#FF6D00', border: '#6A1F5C' },
-	velvet:    { header: '#4C1D95', headerText: '#F5F3FF', accent: '#D946EF', border: '#3B1F6E' },
-	horizon:   { header: '#0284C7', headerText: '#FFFFFF', accent: '#22D3EE', border: '#BAE6FD' },
+	dreamy:    { header: '#7C3AED', headerText: '#FFFFFF', accent: '#A78BFA', border: '#DDD6FE' },
+	velvet:    { header: '#7E22CE', headerText: '#F5F3FF', accent: '#D946EF', border: '#3B1F6E' },
+	champagne: { header: '#7A5500', headerText: '#FFFFFF', accent: '#FACC15', border: '#FDE68A' },
+	bunny:     { header: '#8A0050', headerText: '#FFFFFF', accent: '#FF007F', border: '#FCE7F3' },
+	// Product 2 (index2.html) — horizon / blue
+	horizon:   { header: '#0369A1', headerText: '#FFFFFF', accent: '#22D3EE', border: '#BAE6FD' },
 	arctic:    { header: '#0C2A4A', headerText: '#E0F2FE', accent: '#38BDF8', border: '#1E3A5F' },
-	sahara:    { header: '#D97706', headerText: '#FFFFFF', accent: '#F59E0B', border: '#FDE68A' },
+	sahara:    { header: '#B45309', headerText: '#FFFFFF', accent: '#F59E0B', border: '#FDE68A' },
 	ember:     { header: '#122010', headerText: '#E8DFC8', accent: '#D4A030', border: '#1E3420' },
 	volcano:   { header: '#B91C1C', headerText: '#FFFFFF', accent: '#F59E0B', border: '#FCA5A5' },
 	dusk:      { header: '#1A0525', headerText: '#FFF0F5', accent: '#FFCA0A', border: '#6A1F5C' },
-	petal:     { header: '#C06C84', headerText: '#FFFFFF', accent: '#F67280', border: '#F9B2D7' },
+	// Product 3 (index3.html) — blossom / mauve
+	blossom:   { header: '#C85888', headerText: '#FFFFFF', accent: '#F8D4A0', border: '#F7C9D5' },
+	lavenderhaze:{ header: '#7858B0', headerText: '#FFFFFF', accent: '#C4B5FD', border: '#DDD6FE' },
+	sorbet:    { header: '#904428', headerText: '#FFFFFF', accent: '#FB923C', border: '#FED7AA' },
+	cloud:     { header: '#1C6094', headerText: '#FFFFFF', accent: '#BAE6FD', border: '#DBEAFE' },
+	meadow:    { header: '#3A4E30', headerText: '#FFFFFF', accent: '#A3E635', border: '#D9F99D' },
+	sherbet:   { header: '#0D5044', headerText: '#FFFFFF', accent: '#7048A0', border: '#B8E4D8' },
+	// Legacy / fallback themes
+	obsidian:  { header: '#111827', headerText: '#F9FAFB', accent: '#6366F1', border: '#1F2937' },
+	pearl:     { header: '#2A3A52', headerText: '#FFFFFF', accent: '#D1D5DB', border: '#E5E7EB' },
+	onyx:      { header: '#1E293B', headerText: '#F8FAFC', accent: '#64748B', border: '#334155' },
+	fresh:     { header: '#065F46', headerText: '#FFFFFF', accent: '#34D399', border: '#A7F3D0' },
+	midnight:  { header: '#312E81', headerText: '#E0E7FF', accent: '#818CF8', border: '#334155' },
+	sunset:    { header: '#1A0525', headerText: '#FFF0F5', accent: '#FF6D00', border: '#6A1F5C' },
+	petal:     { header: '#9A3060', headerText: '#FFFFFF', accent: '#F67280', border: '#F9B2D7' },
 	coral:     { header: '#355C7D', headerText: '#FDF2F8', accent: '#F8B195', border: '#3D5A7A' },
-	lagoon:    { header: '#229799', headerText: '#FFFFFF', accent: '#48CFCB', border: '#A2D5C6' },
-	'mint mist':{ header: '#229799', headerText: '#FFFFFF', accent: '#48CFCB', border: '#A2D5C6' },
+	lagoon:    { header: '#0E6670', headerText: '#FFFFFF', accent: '#48CFCB', border: '#A2D5C6' },
+	'mint mist':{ header: '#0E6670', headerText: '#FFFFFF', accent: '#48CFCB', border: '#A2D5C6' },
 	jade:      { header: '#237227', headerText: '#F0FDF4', accent: '#CFFFE2', border: '#1A3D22' },
 	'sage forest': { header: '#237227', headerText: '#F0FDF4', accent: '#CFFFE2', border: '#1A3D22' },
-	champagne: { header: '#A16207', headerText: '#FFFFFF', accent: '#FACC15', border: '#FDE68A' },
-	obsidian:  { header: '#111827', headerText: '#F9FAFB', accent: '#6366F1', border: '#1F2937' },
-	pearl:     { header: '#9CA3AF', headerText: '#FFFFFF', accent: '#D1D5DB', border: '#E5E7EB' },
-	opal:      { header: '#0EA5E9', headerText: '#FFFFFF', accent: '#67E8F9', border: '#BAE6FD' },
-	onyx:      { header: '#1E293B', headerText: '#F8FAFC', accent: '#64748B', border: '#334155' },
-	bunny:     { header: '#EC4899', headerText: '#FFFFFF', accent: '#FBCFE8', border: '#FCE7F3' },
-	blossom:   { header: '#C85888', headerText: '#FFFFFF', accent: '#F8D4A0', border: '#F7C9D5' },
-	lavenderhaze:{ header: '#7C3AED', headerText: '#FFFFFF', accent: '#C4B5FD', border: '#DDD6FE' },
-	sorbet:    { header: '#F59E0B', headerText: '#FFFFFF', accent: '#FB923C', border: '#FED7AA' },
-	cloud:     { header: '#6B7280', headerText: '#FFFFFF', accent: '#9CA3AF', border: '#E5E7EB' },
-	meadow:    { header: '#65A30D', headerText: '#FFFFFF', accent: '#A3E635', border: '#D9F99D' },
-	sherbet:   { header: '#0D5044', headerText: '#FFFFFF', accent: '#7048A0', border: '#B8E4D8' }
+	opal:      { header: '#0369A1', headerText: '#FFFFFF', accent: '#67E8F9', border: '#BAE6FD' }
 };
 
 var DISPLAY_MAP = {
@@ -2590,9 +2631,17 @@ function resetDemoData() {
 }
 
 function onOpen() {
-	// Auto-init on every open — _seedDemoData() no-ops if the Library
-	// already has data, so this is safe + instant after the first run.
-	try { _dbLiteInitializeSheets(); } catch (e) { _log('error', 'onOpen', e); }
+	// Heavy initialization (sheet structure + demo seed + My Year rebuild) is
+	// idempotent but slow (10-30s). Only run it ONCE on first open; after that
+	// it's available on-demand via the Advanced menu. This keeps daily opens snappy
+	// and avoids burning Apps Script quota on every open.
+	try {
+		var props = PropertiesService.getScriptProperties();
+		if (props.getProperty('SHEETS_INITIALIZED') !== '1') {
+			_dbLiteInitializeSheets();
+			props.setProperty('SHEETS_INITIALIZED', '1');
+		}
+	} catch (e) { _log('error', 'onOpen', e); }
 
 	try {
 		var ui = SpreadsheetApp.getUi();
@@ -2604,8 +2653,12 @@ function onOpen() {
 			.addItem('Rebuild Sheet Structure', 'initializeSheets')
 			.addItem('🔄 Reset Demo Data (fix column order)', 'resetDemoData');
 
+		var isDeployed = false;
+		try { isDeployed = !!ScriptApp.getService().getUrl(); } catch(e) {}
+
 		ui.createMenu(_buildJourneyTitle())
-			.addItem('📖 Open Web App',           '_openWebApp')
+			.addItem(isDeployed ? '📖 Open My App' : '🚀 Set Up My App',
+			         isDeployed ? '_openWebApp'    : '_setupMyApp')
 			.addSeparator()
 			.addItem('🎨 Refresh Styling & Colors', '_reStyleCurrentTheme')
 			.addItem('🗑  Clear All Books & Data',  'clientClearDemoData')
@@ -2616,29 +2669,108 @@ function onOpen() {
 }
 
 function _openWebApp() {
-	var url = ScriptApp.getService().getUrl();
-	if (!url) {
-		SpreadsheetApp.getUi().alert(
-			'Web app not deployed yet.\n\n' +
-			'Go to Extensions → Apps Script → Deploy → New deployment,\n' +
-			'then choose "Web app" and click Deploy.\n\n' +
-			'After deploying, come back and try this menu item again.'
-		);
-		return;
-	}
-	// Use a clickable button instead of window.open() on load —
-	// modern browsers block auto-popups from dialogs (popup blocker).
+	var url = '';
+	try { url = ScriptApp.getService().getUrl() || ''; } catch(e) {}
+	if (!url) { _setupMyApp(); return; }
 	var html = HtmlService.createHtmlOutput(
-		'<div style="font-family:Google Sans,Arial,sans-serif;padding:18px 20px;text-align:center;">' +
-		'<p style="margin:0 0 14px;color:#5f6368;font-size:13px;">Click below to open your Reading Journey:</p>' +
-		'<a href="' + url + '" target="_blank" style="text-decoration:none;">' +
-		'<button style="background:#1a73e8;color:#fff;border:none;border-radius:4px;' +
-		'padding:10px 28px;font-size:14px;cursor:pointer;font-family:inherit;">📖 Open Web App</button>' +
-		'</a>' +
-		'<p style="margin:14px 0 0;font-size:11px;color:#9aa0a6;">Opens in a new tab</p>' +
-		'</div>'
-	).setWidth(340).setHeight(130);
+		'<div style="font-family:\'Google Sans\',Arial,sans-serif;padding:20px;text-align:center;">'
+		+ '<div style="font-size:32px;margin-bottom:10px;">📖</div>'
+		+ '<p style="margin:0 0 5px;font-size:13px;font-weight:700;color:#1f2937;">Your Reading App</p>'
+		+ '<p style="margin:0 0 16px;font-size:11px;color:#9ca3af;word-break:break-all;">' + url + '</p>'
+		+ '<a href="' + url + '" target="_blank" style="text-decoration:none;">'
+		+ '<button style="background:#2563eb;color:#fff;border:none;border-radius:8px;'
+		+ 'padding:11px 28px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">'
+		+ 'Open My App \u2197</button></a>'
+		+ '<p style="margin:12px 0 0;font-size:11px;color:#9ca3af;">Bookmark this link \u2014 it\'s yours forever</p>'
+		+ '</div>'
+	).setWidth(360).setHeight(190);
 	SpreadsheetApp.getUi().showModalDialog(html, 'My Reading Journey');
+}
+
+function _setupMyApp() {
+	var existingUrl = '';
+	try { existingUrl = ScriptApp.getService().getUrl() || ''; } catch(e) {}
+	if (existingUrl) { _openWebApp(); return; }
+
+	var html = HtmlService.createHtmlOutput(
+		'<style>*{box-sizing:border-box;margin:0;padding:0}'
+		+ 'body{font-family:"Google Sans",Arial,sans-serif;padding:16px 18px;font-size:13px;color:#1f2937}'
+		+ '.hd{text-align:center;margin-bottom:14px}'
+		+ '.hd .ico{font-size:32px;line-height:1;margin-bottom:6px}'
+		+ '.hd h2{font-size:15px;font-weight:800;color:#111827;margin-bottom:2px}'
+		+ '.hd p{color:#9ca3af;font-size:11px}'
+		+ '.step{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #f3f4f6;align-items:flex-start}'
+		+ '.num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#2563eb;color:#fff;'
+		+ 'display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800}'
+		+ '.st{font-weight:700;font-size:12px;margin-bottom:1px}'
+		+ '.sb{color:#6b7280;font-size:11.5px;line-height:1.4}'
+		+ '.sb b{color:#374151}'
+		+ '.btn{width:100%;padding:11px;background:#2563eb;color:#fff;border:none;border-radius:8px;'
+		+ 'font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:12px}'
+		+ '.btn:disabled{opacity:0.5;cursor:default}'
+		+ '.ok{display:none;margin-top:12px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;'
+		+ 'border-radius:8px;text-align:center}'
+		+ '.ok .tick{font-size:20px;margin-bottom:5px}'
+		+ '.ok p{font-size:12px;color:#166534;margin-bottom:8px;font-weight:600}'
+		+ '.ok a{display:inline-block;background:#16a34a;color:#fff;text-decoration:none;'
+		+ 'border-radius:6px;padding:8px 16px;font-size:12px;font-weight:700}'
+		+ '.ok small{display:block;margin-top:7px;color:#6b7280;font-size:10.5px}'
+		+ '#msg{min-height:14px;margin-top:7px;font-size:11px;color:#ef4444;text-align:center}'
+		+ '</style>'
+		+ '<div class="hd"><div class="ico">📖</div>'
+		+ '<h2>Launch Your Reading App</h2>'
+		+ '<p>One-time setup &bull; about 2 minutes</p></div>'
+		+ '<div class="step"><div class="num">1</div><div>'
+		+ '<div class="st">Open Apps Script</div>'
+		+ '<div class="sb">Click <b>Extensions</b> &rarr; <b>Apps Script</b>. It opens in a new tab.</div></div></div>'
+		+ '<div class="step"><div class="num">2</div><div>'
+		+ '<div class="st">New Deployment</div>'
+		+ '<div class="sb">Click <b>Deploy</b> (top right) &rarr; <b>New deployment</b>.</div></div></div>'
+		+ '<div class="step"><div class="num">3</div><div>'
+		+ '<div class="st">Choose Web App</div>'
+		+ '<div class="sb">Click the <b>&#9881; gear</b> next to &ldquo;Select type&rdquo; &rarr; <b>Web app</b>.</div></div></div>'
+		+ '<div class="step"><div class="num">4</div><div>'
+		+ '<div class="st">Set Permissions</div>'
+		+ '<div class="sb"><b>Execute as</b>: Me &nbsp;&bull;&nbsp; <b>Who has access</b>: Anyone</div></div></div>'
+		+ '<div class="step"><div class="num">5</div><div>'
+		+ '<div class="st">Deploy!</div>'
+		+ '<div class="sb">Click the blue <b>Deploy</b> button. Approve the Google popup. Copy your URL.</div></div></div>'
+		+ '<div class="step"><div class="num">6</div><div>'
+		+ '<div class="st">Come Back Here</div>'
+		+ '<div class="sb">Switch back to this tab and click the button below.</div></div></div>'
+		+ '<button class="btn" id="doneBtn" onclick="checkUrl()">\u2713 I\'ve Deployed \u2014 Show My URL</button>'
+		+ '<div id="msg"></div>'
+		+ '<div class="ok" id="ok">'
+		+ '<div class="tick">\uD83C\uDF89</div>'
+		+ '<p>Your reading app is live!</p>'
+		+ '<a id="appLink" href="#" target="_blank">Open My Reading App \u2197</a>'
+		+ '<small>Bookmark this link \u2014 it\'s yours forever.</small></div>'
+		+ '<script>'
+		+ 'function checkUrl(){'
+		+ 'var btn=document.getElementById("doneBtn");'
+		+ 'var msg=document.getElementById("msg");'
+		+ 'btn.disabled=true;msg.textContent="Checking\u2026";'
+		+ 'google.script.run'
+		+ '.withSuccessHandler(function(u){'
+		+ 'if(u){'
+		+ 'document.getElementById("appLink").href=u;'
+		+ 'document.getElementById("ok").style.display="block";'
+		+ 'btn.style.display="none";msg.textContent="";'
+		+ '}else{'
+		+ 'msg.textContent="Not deployed yet \u2014 finish step 5 and try again.";'
+		+ 'btn.disabled=false;'
+		+ '}})'
+		+ '.withFailureHandler(function(){'
+		+ 'msg.textContent="Something went wrong. Try again.";'
+		+ 'btn.disabled=false;})'
+		+ '._checkDeployment();}'
+		+ '<\/script>'
+	).setWidth(420).setHeight(530);
+	SpreadsheetApp.getUi().showModalDialog(html, 'Set Up My Reading App');
+}
+
+function _checkDeployment() {
+	try { return ScriptApp.getService().getUrl() || ''; } catch(e) { return ''; }
 }
 
 function _reStyleCurrentTheme() {
