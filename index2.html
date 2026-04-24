@@ -12788,8 +12788,14 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
         if (newStatus === 'finished' && !book.dateFinished) {
           book.dateFinished = new Date().toISOString().split('T')[0];
         }
+        if (newStatus === 'reading' && !book.dateStarted) {
+          book.dateStarted = new Date().toISOString().split('T')[0];
+        }
         if (book._serverBookId && hasServerRuntime()) {
-          serverRun('clientUpdateBook', book._serverBookId, { Status: mapUiStatusToSheet(newStatus) || newStatus })
+          var _statusUpdate = { Status: mapUiStatusToSheet(newStatus) || newStatus };
+          if (newStatus === 'finished') _statusUpdate.DateFinished = book.dateFinished;
+          if (newStatus === 'reading') _statusUpdate.DateStarted = book.dateStarted;
+          serverRun('clientUpdateBook', book._serverBookId, _statusUpdate)
             .catch(function() {});
         }
         changed++;
@@ -14023,7 +14029,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             finishBook.dateFinished = finishBook.dateFinished || new Date().toISOString().split('T')[0];
             state.readingOrder = state.readingOrder.filter(function(rid) { return rid !== finishBookId; });
             if (hasServerRuntime()) {
-              if (finishBook._serverBookId) serverRun('clientUpdateBook', finishBook._serverBookId, { Status: mapUiStatusToSheet('finished') }).catch(function() {});
+              if (finishBook._serverBookId) serverRun('clientUpdateBook', finishBook._serverBookId, { Status: mapUiStatusToSheet('finished'), DateFinished: finishBook.dateFinished }).catch(function() {});
               serverRun('clientSaveReadingOrder', state.readingOrder).catch(function() {});
             }
             saveData();
@@ -14757,8 +14763,12 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
                 state.readingOrder = state.readingOrder.filter(function(rid) { return rid !== book.id; });
               }
               if (newStatus === 'finished' && !book.dateFinished) book.dateFinished = new Date().toISOString().split('T')[0];
+              if (newStatus === 'reading' && !book.dateStarted) book.dateStarted = new Date().toISOString().split('T')[0];
               if (book._serverBookId && hasServerRuntime()) {
-                serverRun('clientUpdateBook', book._serverBookId, { Status: mapUiStatusToSheet(newStatus) || newStatus }).catch(function() {});
+                var _bulkUpdate = { Status: mapUiStatusToSheet(newStatus) || newStatus };
+                if (newStatus === 'finished') _bulkUpdate.DateFinished = book.dateFinished;
+                if (newStatus === 'reading') _bulkUpdate.DateStarted = book.dateStarted;
+                serverRun('clientUpdateBook', book._serverBookId, _bulkUpdate).catch(function() {});
               }
               count++;
             }
@@ -16178,7 +16188,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             srcBook.dateStarted = srcBook.dateStarted || new Date().toISOString().split('T')[0];
             if (state.readingOrder.indexOf(srcBook.id) === -1) state.readingOrder.unshift(srcBook.id);
             if (srcBook._serverBookId && hasServerRuntime()) {
-              serverRun('clientUpdateBook', srcBook._serverBookId, { Status: mapUiStatusToSheet('reading') })
+              serverRun('clientUpdateBook', srcBook._serverBookId, { Status: mapUiStatusToSheet('reading'), DateStarted: srcBook.dateStarted })
                 .catch(function(err) { console.warn('Server status update failed:', err); });
             }
             syncReadingOrderToServer();
@@ -18226,6 +18236,27 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
     }
 
     bootstrapApp();
+
+    // ── Sync polling: detect sheet edits every 60s via version counter ────
+    (function initSyncPoll() {
+      if (!hasServerRuntime()) return;
+      var _lastSyncVersion = -1;
+      setInterval(function() {
+        if (document.visibilityState !== 'visible') return;
+        serverRun('clientGetSyncVersion')
+          .then(function(version) {
+            if (_lastSyncVersion < 0) {
+              _lastSyncVersion = version;
+              return;
+            }
+            if (version !== _lastSyncVersion) {
+              _lastSyncVersion = version;
+              refreshFromServer();
+            }
+          })
+          .catch(function() { /* silent — poll will retry next cycle */ });
+      }, 60000);
+    })();
 
     window.addEventListener('resize', syncMobileLayoutMetrics);
     if (window.visualViewport) {

@@ -191,6 +191,25 @@ function _dbLiteArrangeTabs(ss) {
 	if (lib) ss.setActiveSheet(lib);
 }
 
+function _dbLiteUpsertLibraryBannerImage(sheet) {
+	if (!sheet) return;
+	var fileId = '1ZSsQOovDedtBgcDekBhoqrNJYV_ZQypF';
+	try {
+		var images = sheet.getImages();
+		images.forEach(function(img) {
+			try {
+				var anchor = img.getAnchorCell();
+				if (anchor && anchor.getRow() <= 6 && anchor.getColumn() <= 6) img.remove();
+			} catch (e) {}
+		});
+
+		var blob = DriveApp.getFileById(fileId).getBlob();
+		var image = sheet.insertImage(blob, 1, 1, 14, 8);
+		image.setWidth(470);
+		image.setHeight(180);
+	} catch (e) {}
+}
+
 function _dbLiteInitLibrarySheet(sheet, themeName) {
 	var t = _dbLiteTheme(themeName);
 	// Col A = row-number formula. LIBRARY_HEADERS data starts at LIBRARY_DATA_COL (B).
@@ -234,6 +253,7 @@ function _dbLiteInitLibrarySheet(sheet, themeName) {
 		.setFontFamily('Montserrat').setFontSize(52).setFontWeight('bold')
 		.setFontColor('#FFFFFF').setBackground(t.headerBg)
 		.setHorizontalAlignment('right').setVerticalAlignment('top');
+	_dbLiteUpsertLibraryBannerImage(sheet);
 
 	// Rows 7–8: header strip on white (matches data area).
 	var HDR_BG = '#FFFFFF';
@@ -1075,9 +1095,9 @@ function _dbLiteApplyPillFormatting(sheet) {
  * ===================================================================== */
 
 // ── Serve the UI ────────────────────────────────────────────────────────
-function doGet() {
+function doGet(e) {
 	var title = _buildJourneyTitle();
-	var output = HtmlService.createHtmlOutputFromFile('index')
+	var output = HtmlService.createHtmlOutputFromFile(_resolveWebAppView(e))
 		.setTitle(title)
 		.addMetaTag('viewport', 'width=device-width, initial-scale=1');
 	try {
@@ -1085,6 +1105,23 @@ function doGet() {
 		if (xfMode != null) output.setXFrameOptionsMode(xfMode);
 	} catch (e) {}
 	return output;
+}
+
+function _resolveWebAppView(e) {
+	var params = (e && e.parameter) || {};
+	var requested = String(params.view || params.theme || params.variant || '').toLowerCase().trim();
+	var views = {
+		'1': 'index',
+		'index': 'index',
+		'index.html': 'index',
+		'2': 'index2',
+		'index2': 'index2',
+		'index2.html': 'index2',
+		'3': 'index3',
+		'index3': 'index3',
+		'index3.html': 'index3'
+	};
+	return views[requested] || 'index';
 }
 
 function _buildJourneyTitle() {
@@ -1997,7 +2034,7 @@ function _seedDemoData() {
 		{ t:'The Return of the King', a:'J.R.R. Tolkien', g:'Fantasy', isbn:'9780547928197', pg:416, r:0, stat:'Want to Read', da:_weeksAgo(9,3), fmt:'Paperback', ser:'The Lord of the Rings', sn:3 },
 		{ t:'The Maidens', a:'Alex Michaelides', g:'Thriller', isbn:'9781250304452', pg:352, r:0, stat:'Want to Read', da:_weeksAgo(0,1), fmt:'Hardcover' },
 		{ t:'The Alchemist', a:'Paulo Coelho', g:'Fiction', isbn:'9780061122415', pg:208, r:0, stat:'Want to Read', da:_weeksAgo(0,3), fmt:'Paperback' },
-		{ t:'The Great Alone', a:'Kristin Hannah', g:'Historical', isbn:'9781250165619', pg:448, r:0, stat:'Want to Read', da:_weeksAgo(0,4), fmt:'Paperback' }
+		{ t:'Where the Crawdads Sing', a:'Delia Owens', g:'Mystery', isbn:'9780735224292', pg:370, r:0, stat:'Want to Read', da:_weeksAgo(0,4), fmt:'Paperback' }
 	];
 
 	if (existingTitles.length) {
