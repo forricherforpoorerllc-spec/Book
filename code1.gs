@@ -22,10 +22,22 @@
  *  1. Extensions → Apps Script → paste this file → Save
  *  2. Set PRODUCT_VARIANT below to match the product you're distributing
  *  3. Delete any older Code.gs if present (all runtime now lives here)
- *  4. Run initializeSheets() once from the menu to build the sheet + seed demo
- *  5. Deploy → New deployment → Web app → Execute as *me*, access Anyone
- *  6. (Optional) Menu → Install Sync Trigger  for live sheet↔web-app sync
+ *  4. Add your NYT and PodcastIndex keys in the constants below (optional but recommended)
+ *  5. Buyer opens their copied sheet: first-open setup runs automatically
+ *     (sheet init + sync trigger + NYT warmup trigger when key is present)
+ *  6. Buyer uses the one-time setup dialog to deploy Web App and gets their app URL
  * ===================================================================== */
+
+/* =====================================================================
+ *  API KEYS — fill these in on your MASTER sheet before publishing.
+ *  Buyers will inherit them automatically when they "Make a copy".
+ *  All three services have free tiers; rotate here if a key gets abused.
+ *    NYT:           https://developer.nytimes.com  (free, 500 req/day)
+ *    PodcastIndex:  https://podcastindex.org/      (free)
+ * ===================================================================== */
+var NYT_API_KEY              = '';
+var PODCAST_INDEX_API_KEY    = '';
+var PODCAST_INDEX_API_SECRET = '';
 
 function _dbLiteInitializeSheets() {
 	// Migrate old default theme: only for Product 1 — 'blossom' (pink) → 'romantic' (red).
@@ -34,10 +46,11 @@ function _dbLiteInitializeSheets() {
 	if (PRODUCT_VARIANT === 'index' && props.getProperty('DEFAULT_THEME_MIGRATED_V2') !== '1') {
 		try {
 			var pSheet = _ss().getSheetByName(SHEET_PROFILE);
-			if (pSheet && pSheet.getLastRow() >= 2) {
+			var pRow = _getProfileDataRow(pSheet);
+			if (pSheet && pRow >= 2) {
 				var tCol = PROFILE_HEADERS.indexOf('Theme') + 1;
-				var cur = String(pSheet.getRange(2, tCol).getValue() || '').toLowerCase();
-				if (!cur || cur === 'blossom') pSheet.getRange(2, tCol).setValue('romantic');
+				var cur = String(pSheet.getRange(pRow, tCol).getValue() || '').toLowerCase();
+				if (!cur || cur === 'blossom') pSheet.getRange(pRow, tCol).setValue('romantic');
 			}
 		} catch(e) {}
 		props.setProperty('DEFAULT_THEME_MIGRATED_V2', '1');
@@ -134,7 +147,7 @@ function _dbLiteIsDark(hex) {
 
 function _dbLiteEnsureProfileDefaults(sheet) {
 	if (!sheet) return;
-	if (sheet.getLastRow() >= 2) return;
+	if (_getProfileDataRow(sheet) >= HIDDEN_DATA_ROW) return;
 
 	var defaults = PROFILE_HEADERS.map(function(h) {
 		switch (h) {
@@ -163,7 +176,7 @@ function _dbLiteEnsureProfileDefaults(sheet) {
 			default: return '';
 		}
 	});
-	sheet.getRange(2, 1, 1, PROFILE_HEADERS.length).setValues([defaults]);
+	sheet.getRange(HIDDEN_DATA_ROW, 1, 1, PROFILE_HEADERS.length).setValues([defaults]);
 }
 
 function _dbLiteArrangeTabs(ss) {
@@ -403,7 +416,7 @@ function _dbLiteInitMyYearSheet(ss, themeName) {
 	var NUM_COLS = 12;
 	var COV_START = 1;
 	var COV_PER_ROW = 12;
-	var COVER_W = 148;
+	var COVER_W = 126;
 	var COVER_H = 218;
 	var HELPER_ROW = 1800;
 	var HELPER_ROWS = 400;
@@ -507,9 +520,10 @@ function _dbLiteInitMyYearSheet(ss, themeName) {
 	// Yearly goal
 	var profileSheet = ss.getSheetByName(SHEET_PROFILE);
 	var yearlyGoal = 50;
-	if (profileSheet && profileSheet.getLastRow() >= 2) {
+	var profileRow = _getProfileDataRow(profileSheet);
+	if (profileSheet && profileRow >= 2) {
 		var goalColIdx = PROFILE_HEADERS.indexOf('YearlyGoal') + 1;
-		yearlyGoal = Number(profileSheet.getRange(2, goalColIdx).getValue()) || 50;
+		yearlyGoal = Number(profileSheet.getRange(profileRow, goalColIdx).getValue()) || 50;
 	}
 	var goalDone = finishedThisYear.length;
 	var goalPct = Math.min(100, Math.round(goalDone / Math.max(1, yearlyGoal) * 100));
@@ -785,7 +799,7 @@ function _dbLiteInitMyYearSheet(ss, themeName) {
 
 	// Charts — distinct palette per chart for visual diversity
 	var DIVERSE_PALETTE = ['#6366F1', '#EC4899', '#10B981', '#F59E0B', '#3B82F6', '#8B5CF6', '#EF4444', '#06B6D4', '#A855F7', '#14B8A6', '#F97316', '#0EA5E9'];
-	var CHART_W = 860, CHART_H = 320;
+	var CHART_W = Math.max(620, (COVER_W * 6) - 24), CHART_H = 320;
 	try {
 		var paceChart = sheet.newChart()
 			.setChartType(Charts.ChartType.COLUMN)
@@ -814,7 +828,7 @@ function _dbLiteInitMyYearSheet(ss, themeName) {
 			.setOption('backgroundColor', '#FFFFFF')
 			.setOption('legend', { position: 'top', textStyle: { fontName: 'Montserrat', fontSize: 11 } })
 			.setOption('seriesType', 'bars')
-			.setOption('series', { 0: { type: 'bars', color: '#EC4899' }, 1: { type: 'line', color: '#0F172A', lineWidth: 3, pointSize: 5 } })
+			.setOption('series', { 0: { type: 'bars', color: '#EC4899' }, 1: { type: 'line', color: '#94A3B8', lineWidth: 2, pointSize: 4 } })
 			.setOption('hAxis', { textStyle: { fontName: 'Montserrat', fontSize: 11, color: '#475569' } })
 			.setOption('vAxis', { textStyle: { fontName: 'Montserrat', fontSize: 11, color: '#475569' }, minValue: 0, format: '0' })
 			.build();
@@ -1133,6 +1147,9 @@ function doGet(e) {
 		props.setProperty('PRODUCT_DEFAULT_THEME', _VIEW_THEME_MAP[view] || 'romantic');
 		props.setProperty('PRODUCT_THEME_SEEDED', '1');
 	}
+	if (props.getProperty('SHEETS_INITIALIZED') !== '1') {
+		try { _dbLiteInitializeSheets(); props.setProperty('SHEETS_INITIALIZED', '1'); } catch(eSeed) {}
+	}
 	var title = _buildJourneyTitle();
 	var output = HtmlService.createHtmlOutputFromFile(view)
 		.setTitle(title)
@@ -1158,13 +1175,14 @@ function _resolveWebAppView(e) {
 		'index3': 'index3',
 		'index3.html': 'index3'
 	};
-	return views[requested] || 'index';
+	return views[requested] || PRODUCT_VARIANT || 'index';
 }
 
 function _buildJourneyTitle() {
 	var sheet = _ss().getSheetByName(SHEET_PROFILE);
-	if (sheet && sheet.getLastRow() >= 2) {
-		var name = String(sheet.getRange(2, 1).getValue() || '').trim();
+	var row = _getProfileDataRow(sheet);
+	if (sheet && row >= 2) {
+		var name = String(sheet.getRange(row, 1).getValue() || '').trim();
 		if (name) {
 			var possessive = name.slice(-1) === 's' ? name + "'" : name + "'s";
 			return possessive + ' Reading Journey';
@@ -1180,6 +1198,8 @@ var SHEET_SHELVES     = 'Shelves';
 var SHEET_PROFILE     = 'Profile';
 var SHEET_AUDIOBOOKS  = 'Audiobooks';
 var SHEET_MYYEAR      = 'My Year';
+var HIDDEN_HEADER_ROW = 2;
+var HIDDEN_DATA_ROW   = 3;
 
 // ── Library layout constants ─────────────────────────────────────────────
 // Col A = auto row-number formula. Data starts at column B (LIBRARY_DATA_COL).
@@ -1339,9 +1359,9 @@ function _ensureRows(sheet, needed) {
 function _sheetToObjects(sheet, internalHeaders) {
 	if (!sheet) return [];
 	var data = sheet.getDataRange().getValues();
-	if (data.length < 2) return [];
+	if (data.length < HIDDEN_DATA_ROW) return [];
 	var headers = internalHeaders || data[0];
-	return data.slice(1).filter(function(row) {
+	return data.slice(HIDDEN_DATA_ROW - 1).filter(function(row) {
 		for (var i = 0; i < headers.length; i++) {
 			if (row[i] !== '' && row[i] !== null) return true;
 		}
@@ -1355,8 +1375,27 @@ function _sheetToObjects(sheet, internalHeaders) {
 
 function _findRowByCol(sheet, colIndex, value) {
 	var data = sheet.getDataRange().getValues();
-	for (var r = 1; r < data.length; r++) {
+	for (var r = HIDDEN_DATA_ROW - 1; r < data.length; r++) {
 		if (String(data[r][colIndex]) === String(value)) return r + 1;
+	}
+	return -1;
+}
+
+function _getProfileDataRow(sheet) {
+	if (!sheet) return -1;
+	if (sheet.getLastRow() >= HIDDEN_DATA_ROW) {
+		var row3 = sheet.getRange(HIDDEN_DATA_ROW, 1, 1, PROFILE_HEADERS.length).getValues()[0];
+		var hasRow3Data = row3.some(function(v) { return v !== '' && v !== null; });
+		if (hasRow3Data) return HIDDEN_DATA_ROW;
+	}
+	if (sheet.getLastRow() >= HIDDEN_HEADER_ROW) {
+		var row2 = sheet.getRange(HIDDEN_HEADER_ROW, 1, 1, PROFILE_HEADERS.length).getValues()[0];
+		var displayHeaders = _displayHeaders(PROFILE_HEADERS);
+		var looksLikeHeaders = row2.every(function(v, i) {
+			return String(v || '') === String(displayHeaders[i] || '');
+		});
+		var hasRow2Data = row2.some(function(v) { return v !== '' && v !== null; });
+		if (hasRow2Data && !looksLikeHeaders) return HIDDEN_HEADER_ROW;
 	}
 	return -1;
 }
@@ -1423,9 +1462,10 @@ function _getThemePalette(themeName) {
 
 function _getCurrentTheme() {
 	var sheet = _ss().getSheetByName(SHEET_PROFILE);
-	if (!sheet || sheet.getLastRow() < 2) return 'romantic';
+	var row = _getProfileDataRow(sheet);
+	if (!sheet || row < 2) return 'romantic';
 	var themeCol = PROFILE_HEADERS.indexOf('Theme') + 1;
-	return String(sheet.getRange(2, themeCol).getValue() || 'romantic').toLowerCase();
+	return String(sheet.getRange(row, themeCol).getValue() || 'romantic').toLowerCase();
 }
 
 // Covers are NEVER rendered in the visible sheet — this is intentional for
@@ -1523,7 +1563,7 @@ function clientGetInitialData() {
 			SpiceLevel: Number(row.SpiceLevel) || 0,
 			Moods: row.Tags || '', Shelves: row.Shelves || '',
 			Notes: row.Notes || '', Review: row.Review || '', Quotes: row.Quotes || '',
-			Favorite: row.Favorite === true || String(row.Favorite).toUpperCase() === 'TRUE',
+			Favorite: row.Favorite === true || String(row.Favorite).toUpperCase() === 'TRUE' || String(row.Favorite).indexOf('♥') >= 0,
 			CoverEmoji: row.CoverEmoji || '',
 			CoverUrlPrimary: coverPrimary, CoverUrlFallback: coverFallback,
 			Gradient1: row.Gradient1 || '', Gradient2: row.Gradient2 || '',
@@ -1546,8 +1586,9 @@ function clientGetInitialData() {
 	});
 
 	var profileData = {};
-	if (profileSheet && profileSheet.getLastRow() >= 2) {
-		var pRow = profileSheet.getRange(2, 1, 1, PROFILE_HEADERS.length).getValues()[0];
+	var profileRow2 = _getProfileDataRow(profileSheet);
+	if (profileSheet && profileRow2 >= 2) {
+		var pRow = profileSheet.getRange(profileRow2, 1, 1, PROFILE_HEADERS.length).getValues()[0];
 		PROFILE_HEADERS.forEach(function(h, i) { profileData[h] = pRow[i]; });
 	}
 
@@ -1603,7 +1644,9 @@ function clientGetInitialData() {
 
 // ── Books ────────────────────────────────────────────────────────────────
 function clientAddBook(payload) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		var sheet = _getOrCreateSheet(SHEET_LIBRARY, LIBRARY_HEADERS);
 		var bookId = _uuid();
 		var row = _bookPayloadToRow(bookId, payload);
@@ -1613,10 +1656,13 @@ function clientAddBook(payload) {
 		sheet.getRange(nextRow, LIBRARY_DATA_COL, 1, LIBRARY_HEADERS.length).setValues([row]);
 		return { BookId: bookId };
 	} catch (e) { return { error: e.message }; }
+	finally { lock.releaseLock(); }
 }
 
 function clientUpdateBook(bookId, updates) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		if (!_validateId(bookId)) return { error: 'Invalid book ID.' };
 		if (!updates || typeof updates !== 'object') return { error: 'Updates object required.' };
 		var sheet = _ss().getSheetByName(SHEET_LIBRARY);
@@ -1647,16 +1693,20 @@ function clientUpdateBook(bookId, updates) {
 		sheet.getRange(rowIdx, LIBRARY_DATA_COL, 1, LIBRARY_HEADERS.length).setValues([dataRow]);
 		return { success: true };
 	} catch (e) { return { error: e.message }; }
+	finally { lock.releaseLock(); }
 }
 
 function clientDeleteBook(bookId) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		if (!_validateId(bookId)) return;
 		var sheet = _ss().getSheetByName(SHEET_LIBRARY);
 		if (!sheet) return;
 		var rowIdx = _findLibRowByBookId(sheet, bookId);
 		if (rowIdx >= LIBRARY_DATA_ROW) sheet.deleteRow(rowIdx);
 	} catch (e) { return { error: e.message }; }
+	finally { lock.releaseLock(); }
 }
 
 function _bookPayloadToRow(bookId, p) {
@@ -1704,7 +1754,9 @@ function _bookPayloadToRow(bookId, p) {
 }
 
 function clientImportGoodreadsCSV(rows) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		if (!rows || rows.length < 2) return { imported: 0 };
 		var sheet = _getOrCreateSheet(SHEET_LIBRARY, LIBRARY_HEADERS);
 		var headers = rows[0];
@@ -1738,6 +1790,7 @@ function clientImportGoodreadsCSV(rows) {
 		}
 		return { imported: newRows.length };
 	} catch (e) { return { error: e.message, imported: 0 }; }
+	finally { lock.releaseLock(); }
 }
 
 function clientImportStoryGraphCSV(rows) {
@@ -1762,7 +1815,7 @@ function clientDeleteShelf(shelfId) {
 		if (!_validateId(shelfId)) return;
 		var sheet = _ss().getSheetByName(SHEET_SHELVES); if (!sheet) return;
 		var rowIdx = _findRowByCol(sheet, 0, shelfId);
-		if (rowIdx >= 2) sheet.deleteRow(rowIdx);
+		if (rowIdx >= HIDDEN_DATA_ROW) sheet.deleteRow(rowIdx);
 	} catch (e) {}
 }
 function clientRenameShelf(shelfId, newName) {
@@ -1770,7 +1823,7 @@ function clientRenameShelf(shelfId, newName) {
 		if (!_validateId(shelfId)) return;
 		var sheet = _ss().getSheetByName(SHEET_SHELVES); if (!sheet) return;
 		var rowIdx = _findRowByCol(sheet, 0, shelfId);
-		if (rowIdx >= 2) sheet.getRange(rowIdx, 2).setValue(String(newName || '').slice(0, 200));
+		if (rowIdx >= HIDDEN_DATA_ROW) sheet.getRange(rowIdx, 2).setValue(String(newName || '').slice(0, 200));
 	} catch (e) {}
 }
 function clientUpdateShelf(shelfId, updates) {
@@ -1778,7 +1831,7 @@ function clientUpdateShelf(shelfId, updates) {
 		if (!updates || !_validateId(shelfId)) return;
 		var sheet = _ss().getSheetByName(SHEET_SHELVES); if (!sheet) return;
 		var rowIdx = _findRowByCol(sheet, 0, shelfId);
-		if (rowIdx < 2) return;
+		if (rowIdx < HIDDEN_DATA_ROW) return;
 		var newName = updates.Name !== undefined ? updates.Name : updates.name;
 		if (newName !== undefined) sheet.getRange(rowIdx, 2).setValue(String(newName).slice(0, 200));
 		var newIcon = updates.Icon !== undefined ? updates.Icon : updates.icon;
@@ -1802,7 +1855,7 @@ function clientUpdateChallenge(challengeId, updates) {
 	try {
 		if (!_validateId(challengeId)) return;
 		var sheet = _ss().getSheetByName(SHEET_CHALLENGES); if (!sheet) return;
-		var rowIdx = _findRowByCol(sheet, 0, challengeId); if (rowIdx < 2) return;
+		var rowIdx = _findRowByCol(sheet, 0, challengeId); if (rowIdx < HIDDEN_DATA_ROW) return;
 		var row = sheet.getRange(rowIdx, 1, 1, CHALLENGE_HEADERS.length).getValues()[0];
 		if (updates.name !== undefined)    row[1] = String(updates.name).slice(0, 200);
 		if (updates.icon !== undefined)    row[2] = String(updates.icon).slice(0, 50);
@@ -1816,11 +1869,13 @@ function clientDeleteChallenge(challengeId) {
 		if (!_validateId(challengeId)) return;
 		var sheet = _ss().getSheetByName(SHEET_CHALLENGES); if (!sheet) return;
 		var rowIdx = _findRowByCol(sheet, 0, challengeId);
-		if (rowIdx >= 2) sheet.deleteRow(rowIdx);
+		if (rowIdx >= HIDDEN_DATA_ROW) sheet.deleteRow(rowIdx);
 	} catch (e) {}
 }
 function clientSyncChallenges(challengesArray) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		if (!challengesArray || challengesArray.length === 0) return;
 		var sheet = _getOrCreateSheet(SHEET_CHALLENGES, CHALLENGE_HEADERS);
 		var rows = challengesArray.map(function(c) {
@@ -1831,24 +1886,30 @@ function clientSyncChallenges(challengesArray) {
 				Number(c.current) || 0, Number(c.target) || 1
 			];
 		});
-		if (sheet.getLastRow() > 1) {
-			sheet.getRange(2, 1, sheet.getLastRow() - 1, CHALLENGE_HEADERS.length).clearContent();
+		if (sheet.getLastRow() >= HIDDEN_DATA_ROW) {
+			sheet.getRange(HIDDEN_DATA_ROW, 1, sheet.getLastRow() - HIDDEN_DATA_ROW + 1, CHALLENGE_HEADERS.length).clearContent();
 		}
-		sheet.getRange(2, 1, rows.length, CHALLENGE_HEADERS.length).setValues(rows);
+		sheet.getRange(HIDDEN_DATA_ROW, 1, rows.length, CHALLENGE_HEADERS.length).setValues(rows);
 	} catch (e) {}
+	finally { lock.releaseLock(); }
 }
 
 // ── Settings / Profile ──────────────────────────────────────────────────
 function clientSetSetting(key, value) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		var sheet = _getOrCreateSheet(SHEET_PROFILE, PROFILE_HEADERS);
-		if (sheet.getLastRow() < 2) _dbLiteEnsureProfileDefaults(sheet);
+		if (_getProfileDataRow(sheet) < HIDDEN_DATA_ROW) _dbLiteEnsureProfileDefaults(sheet);
 		var colIdx = PROFILE_HEADERS.indexOf(key);
 		if (colIdx < 0) return;
 		var safeValue = (key === 'Theme') ? _validateTheme(value) : value;
-		sheet.getRange(2, colIdx + 1).setValue(safeValue);
-		if (key === 'Theme') _reStyleAllSheets(safeValue);
-	} catch (e) {}
+		var row = _getProfileDataRow(sheet);
+		sheet.getRange(row < HIDDEN_DATA_ROW ? HIDDEN_DATA_ROW : row, colIdx + 1).setValue(safeValue);
+	} catch (e) {
+	} finally {
+		lock.releaseLock();
+	}
 }
 function clientSetSettings(settingsObj) {
 	try {
@@ -1858,9 +1919,13 @@ function clientSetSettings(settingsObj) {
 }
 
 function clientSaveProfile(profileData) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		var sheet = _getOrCreateSheet(SHEET_PROFILE, PROFILE_HEADERS);
-		if (sheet.getLastRow() < 2) _dbLiteEnsureProfileDefaults(sheet);
+		if (_getProfileDataRow(sheet) < HIDDEN_DATA_ROW) _dbLiteEnsureProfileDefaults(sheet);
+		var row = _getProfileDataRow(sheet);
+		if (row < HIDDEN_DATA_ROW) row = HIDDEN_DATA_ROW;
 		var mapping = { 'name':'Name', 'motto':'Motto', 'photoData':'PhotoData' };
 		Object.keys(mapping).forEach(function(k) {
 			if (profileData[k] !== undefined) {
@@ -1869,7 +1934,7 @@ function clientSaveProfile(profileData) {
 					var val = (k === 'photoData')
 						? String(profileData[k] || '').slice(0, 49000)
 						: String(profileData[k] || '').slice(0, 500);
-					sheet.getRange(2, colIdx + 1).setValue(val);
+					sheet.getRange(row, colIdx + 1).setValue(val);
 				}
 			}
 		});
@@ -1881,6 +1946,7 @@ function clientSaveProfile(profileData) {
 			_ss().rename('My Reading Journey');
 		}
 	} catch (e) {}
+	finally { lock.releaseLock(); }
 }
 
 function clientSaveYearlyGoal(goal) {
@@ -1894,18 +1960,20 @@ function clientSaveReadingOrder(orderArray) {
 	try {
 		if (!Array.isArray(orderArray)) return;
 		var sheet = _getOrCreateSheet(SHEET_PROFILE, PROFILE_HEADERS);
-		if (sheet.getLastRow() < 2) _dbLiteEnsureProfileDefaults(sheet);
+		if (_getProfileDataRow(sheet) < HIDDEN_DATA_ROW) _dbLiteEnsureProfileDefaults(sheet);
 		var colIdx = PROFILE_HEADERS.indexOf('ReadingOrder');
-		if (colIdx >= 0) sheet.getRange(2, colIdx + 1).setValue(JSON.stringify(orderArray));
+		var row = _getProfileDataRow(sheet);
+		if (colIdx >= 0) sheet.getRange(row < HIDDEN_DATA_ROW ? HIDDEN_DATA_ROW : row, colIdx + 1).setValue(JSON.stringify(orderArray));
 	} catch (e) {}
 }
 function clientSaveRecentIds(idsArray) {
 	try {
 		if (!Array.isArray(idsArray)) return;
 		var sheet = _getOrCreateSheet(SHEET_PROFILE, PROFILE_HEADERS);
-		if (sheet.getLastRow() < 2) _dbLiteEnsureProfileDefaults(sheet);
+		if (_getProfileDataRow(sheet) < HIDDEN_DATA_ROW) _dbLiteEnsureProfileDefaults(sheet);
 		var colIdx = PROFILE_HEADERS.indexOf('RecentIds');
-		if (colIdx >= 0) sheet.getRange(2, colIdx + 1).setValue(JSON.stringify(idsArray));
+		var row = _getProfileDataRow(sheet);
+		if (colIdx >= 0) sheet.getRange(row < HIDDEN_DATA_ROW ? HIDDEN_DATA_ROW : row, colIdx + 1).setValue(JSON.stringify(idsArray));
 	} catch (e) {}
 }
 function clientSaveUiPrefs(prefs) {
@@ -1933,7 +2001,9 @@ function clientSaveUiPrefs(prefs) {
 
 // ── Audiobooks ──────────────────────────────────────────────────────────
 function clientSaveAudiobook(audioData) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		var sheet = _getOrCreateSheet(SHEET_AUDIOBOOKS, AUDIOBOOK_HEADERS);
 		var existingRow = _findRowByCol(sheet, 0, audioData.id);
 		var row = [
@@ -1943,18 +2013,21 @@ function clientSaveAudiobook(audioData) {
 			Number(audioData.chapterIndex) || 0, Number(audioData.currentTime) || 0,
 			Number(audioData.speed) || 1, Number(audioData.totalListeningMins) || 0
 		];
-		if (existingRow > 1) {
+		if (existingRow >= HIDDEN_DATA_ROW) {
 			sheet.getRange(existingRow, 1, 1, AUDIOBOOK_HEADERS.length).setValues([row]);
 		} else {
 			sheet.appendRow(row);
 		}
 	} catch (e) { return { error: e.message }; }
+	finally { lock.releaseLock(); }
 }
 function clientSaveAudioPosition(audioId, chapterIndex, currentTime, speed, totalListeningMins) {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		if (!_validateId(audioId)) return;
 		var sheet = _ss().getSheetByName(SHEET_AUDIOBOOKS); if (!sheet) return;
-		var rowIdx = _findRowByCol(sheet, 0, String(audioId)); if (rowIdx < 2) return;
+		var rowIdx = _findRowByCol(sheet, 0, String(audioId)); if (rowIdx < HIDDEN_DATA_ROW) return;
 		var row = sheet.getRange(rowIdx, 1, 1, AUDIOBOOK_HEADERS.length).getValues()[0];
 		row[AUDIOBOOK_HEADERS.indexOf('CurrentChapterIndex')] = Number(chapterIndex) || 0;
 		row[AUDIOBOOK_HEADERS.indexOf('CurrentTime')]         = Number(currentTime) || 0;
@@ -1964,12 +2037,13 @@ function clientSaveAudioPosition(audioId, chapterIndex, currentTime, speed, tota
 		}
 		sheet.getRange(rowIdx, 1, 1, AUDIOBOOK_HEADERS.length).setValues([row]);
 	} catch (e) {}
+	finally { lock.releaseLock(); }
 }
 
 // ── Demo Data ───────────────────────────────────────────────────────────
 function _clearSheetDataRows(sheet, headers) {
-	if (!sheet || sheet.getLastRow() < 2) return;
-	sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).clearContent();
+	if (!sheet || sheet.getLastRow() < HIDDEN_DATA_ROW) return;
+	sheet.getRange(HIDDEN_DATA_ROW, 1, sheet.getLastRow() - HIDDEN_DATA_ROW + 1, headers.length).clearContent();
 }
 
 function _seedDemoData() {
@@ -2074,8 +2148,7 @@ function _seedDemoData() {
 		{ t:'The Two Towers', a:'J.R.R. Tolkien', g:'Fantasy', isbn:'9780547928203', pg:352, r:0, stat:'Want to Read', da:_weeksAgo(10,3), fmt:'Paperback', ser:'The Lord of the Rings', sn:2 },
 		{ t:'The Return of the King', a:'J.R.R. Tolkien', g:'Fantasy', isbn:'9780547928197', pg:416, r:0, stat:'Want to Read', da:_weeksAgo(9,3), fmt:'Paperback', ser:'The Lord of the Rings', sn:3 },
 		{ t:'The Maidens', a:'Alex Michaelides', g:'Thriller', isbn:'9781250304452', pg:352, r:0, stat:'Want to Read', da:_weeksAgo(0,1), fmt:'Hardcover' },
-		{ t:'The Alchemist', a:'Paulo Coelho', g:'Fiction', isbn:'9780061122415', pg:208, r:0, stat:'Want to Read', da:_weeksAgo(0,3), fmt:'Paperback' },
-		{ t:'Where the Crawdads Sing', a:'Delia Owens', g:'Mystery', isbn:'9780735224292', pg:370, r:0, stat:'Want to Read', da:_weeksAgo(0,4), fmt:'Paperback' }
+		{ t:'The Alchemist', a:'Paulo Coelho', g:'Fiction', isbn:'9780061122415', pg:208, r:0, stat:'Want to Read', da:_weeksAgo(0,3), fmt:'Paperback' }
 	];
 
 	if (existingTitles.length) {
@@ -2145,8 +2218,8 @@ function _seedDemoData() {
 
 	// Seed goals
 	var chalSheet = _getOrCreateSheet(SHEET_CHALLENGES, CHALLENGE_HEADERS);
-	if (chalSheet.getLastRow() < 2) {
-		chalSheet.getRange(2, 1, 3, CHALLENGE_HEADERS.length).setValues([
+	if (_sheetToObjects(chalSheet, CHALLENGE_HEADERS).length === 0) {
+		chalSheet.getRange(HIDDEN_DATA_ROW, 1, 3, CHALLENGE_HEADERS.length).setValues([
 			[_uuid(), '50 Books Challenge', 'Books', 42, 50],
 			[_uuid(), 'Read 30 Min Daily', 'Daily', 27, 30],
 			[_uuid(), 'Try 5 New Authors', 'Authors', 4, 5]
@@ -2155,8 +2228,8 @@ function _seedDemoData() {
 
 	// Seed shelves
 	var shelfSheet = _getOrCreateSheet(SHEET_SHELVES, SHELF_HEADERS);
-	if (shelfSheet.getLastRow() < 2) {
-		shelfSheet.getRange(2, 1, 3, SHELF_HEADERS.length).setValues([
+	if (_sheetToObjects(shelfSheet, SHELF_HEADERS).length === 0) {
+		shelfSheet.getRange(HIDDEN_DATA_ROW, 1, 3, SHELF_HEADERS.length).setValues([
 			[_uuid(), 'Book Club', 'Club'],
 			[_uuid(), 'Comfort Reads', 'Calm'],
 			[_uuid(), 'Summer TBR', 'Seasonal']
@@ -2165,14 +2238,17 @@ function _seedDemoData() {
 
 	// Reading order → profile
 	var profileSheet = _ss().getSheetByName(SHEET_PROFILE);
-	if (profileSheet && profileSheet.getLastRow() >= 2 && readingIds.length > 0) {
+	var profileRow3 = _getProfileDataRow(profileSheet);
+	if (profileSheet && profileRow3 >= 2 && readingIds.length > 0) {
 		var roCol = PROFILE_HEADERS.indexOf('ReadingOrder') + 1;
-		if (roCol > 0) profileSheet.getRange(2, roCol).setValue(JSON.stringify(readingIds));
+		if (roCol > 0) profileSheet.getRange(profileRow3, roCol).setValue(JSON.stringify(readingIds));
 	}
 }
 
 function clientClearDemoData() {
+	var lock = LockService.getDocumentLock();
 	try {
+		lock.waitLock(10000);
 		// If called from a menu click (has UI), require confirmation. The
 		// webapp calls this same function but its own confirm dialog already
 		// ran, so a second confirm won't appear there (getUi() throws in
@@ -2204,29 +2280,31 @@ function clientClearDemoData() {
 		_clearSheetDataRows(ss.getSheetByName(SHEET_SHELVES), SHELF_HEADERS);
 		_clearSheetDataRows(ss.getSheetByName(SHEET_AUDIOBOOKS), AUDIOBOOK_HEADERS);
 		var profileSheet = ss.getSheetByName(SHEET_PROFILE);
-		if (profileSheet && profileSheet.getLastRow() >= 2) {
+		var profileRow = _getProfileDataRow(profileSheet);
+		if (profileSheet && profileRow >= 2) {
 			var resets = {
 				ReadingOrder: '[]', RecentIds: '[]', SelectedFilter: 'all',
 				ActiveShelf: '', SortBy: 'default', LibViewMode: 'grid',
 				ChallengeBarCollapsed: false, LibToolsOpen: false
 			};
-			var pRow = profileSheet.getRange(2, 1, 1, PROFILE_HEADERS.length).getValues()[0];
+			var pRow = profileSheet.getRange(profileRow, 1, 1, PROFILE_HEADERS.length).getValues()[0];
 			Object.keys(resets).forEach(function(k) {
 				var c = PROFILE_HEADERS.indexOf(k); if (c >= 0) pRow[c] = resets[k];
 			});
-			profileSheet.getRange(2, 1, 1, PROFILE_HEADERS.length).setValues([pRow]);
+			profileSheet.getRange(profileRow, 1, 1, PROFILE_HEADERS.length).setValues([pRow]);
 		}
 		// Rebuild the My Year dashboard so the sheet UI mirrors the now-empty web app state.
 		try {
 			var themeName = 'default';
-			if (profileSheet && profileSheet.getLastRow() >= 2) {
+			if (profileSheet && profileRow >= 2) {
 				var thC = PROFILE_HEADERS.indexOf('Theme') + 1;
-				if (thC > 0) themeName = String(profileSheet.getRange(2, thC).getValue() || 'default');
+				if (thC > 0) themeName = String(profileSheet.getRange(profileRow, thC).getValue() || 'default');
 			}
 			_dbLiteInitMyYearSheet(ss, themeName);
 		} catch (myErr) { _log('warn', 'clientClearDemoData myYear rebuild', myErr); }
 		return { cleared: true };
 	} catch (e) { return { error: e.message }; }
+	finally { lock.releaseLock(); }
 }
 
 // =====================================================================
@@ -2296,8 +2374,8 @@ function clientSearchAudiobook(query) {
 function clientSearchPodcastDiscussions(query) {
 	if (!query) return [];
 	var props = PropertiesService.getScriptProperties();
-	var apiKey = props.getProperty('PODCAST_INDEX_API_KEY');
-	var apiSecret = props.getProperty('PODCAST_INDEX_API_SECRET');
+	var apiKey = PODCAST_INDEX_API_KEY || props.getProperty('PODCAST_INDEX_API_KEY');
+	var apiSecret = PODCAST_INDEX_API_SECRET || props.getProperty('PODCAST_INDEX_API_SECRET');
 	if (!apiKey || !apiSecret) return [];
 	var ts = String(Math.floor(Date.now() / 1000));
 	var authBytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_1, apiKey + apiSecret + ts, Utilities.Charset.UTF_8);
@@ -2329,7 +2407,7 @@ function clientSearchPodcastDiscussions(query) {
 
 function clientGetAudiobookChapters(projectId) {
 	if (!projectId) return [];
-	var url = 'https://librivox.org/api/feed/audiotracks?project_id=' + projectId + '&format=json';
+	var url = 'https://librivox.org/api/feed/audiotracks?project_id=' + encodeURIComponent(projectId) + '&format=json';
 	try {
 		var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
 		var json = JSON.parse(resp.getContentText());
@@ -2398,7 +2476,7 @@ function clientCheckFreeEbook(isbn) {
 		if (!entry) return { available: false };
 		var preview = entry.preview || 'noview';
 		return {
-			available: preview === 'full' || preview === 'limited',
+			available: preview === 'full',
 			previewLevel: preview,
 			readUrl: entry.read_url || entry.info_url || '',
 			thumbnail: entry.thumbnail_url || ''
@@ -2458,7 +2536,7 @@ var NYT_LISTS = [
 ];
 
 function _getNytApiKey() {
-	return PropertiesService.getScriptProperties().getProperty('NYT_API_KEY') || null;
+	return NYT_API_KEY || PropertiesService.getScriptProperties().getProperty('NYT_API_KEY') || null;
 }
 
 function clientRefreshNYTCache() {
@@ -2482,7 +2560,7 @@ function clientRefreshNYTCache() {
 					return {
 						rank: Number(b.rank) || 0, weeksOn: Number(b.weeks_on_list) || 0,
 						title: b.title || '', author: b.author || '',
-						description: b.description || '',
+						description: String(b.description || '').slice(0, 120),
 						isbn13: b.primary_isbn13 || '', isbn10: b.primary_isbn10 || '',
 						bookImage: b.book_image || ''
 					};
@@ -2503,11 +2581,15 @@ function clientRefreshNYTCache() {
 			Utilities.sleep(6500);
 		} catch (e) {}
 	});
-	props.setProperty('NYT_CACHE', JSON.stringify(cache));
+	var _nyCacheJson = JSON.stringify(cache);
+	try { CacheService.getScriptCache().put('NYT_CACHE', _nyCacheJson, 86400); } catch (cE) {
+		try { props.setProperty('NYT_CACHE', _nyCacheJson.slice(0, 9000)); } catch(pE) {}
+	}
 	props.setProperty('NYT_CACHE_DATE', new Date().toISOString().slice(0, 10));
-	props.setProperty('NYT_FEED_CURRENT', JSON.stringify({
-		updatedAt: new Date().toISOString().slice(0, 10), lists: currentFeed
-	}));
+	var _nyFeedJson = JSON.stringify({ updatedAt: new Date().toISOString().slice(0, 10), lists: currentFeed });
+	try { CacheService.getScriptCache().put('NYT_FEED_CURRENT', _nyFeedJson, 86400); } catch (cE) {
+		try { props.setProperty('NYT_FEED_CURRENT', _nyFeedJson.slice(0, 9000)); } catch(pE) {}
+	}
 }
 
 function _getLibraryIsbnsForNyt() {
@@ -2526,7 +2608,8 @@ function _getLibraryIsbnsForNyt() {
 }
 
 function clientGetNYTBadgesForLibrary() {
-	var raw = PropertiesService.getScriptProperties().getProperty('NYT_CACHE');
+	var raw = CacheService.getScriptCache().get('NYT_CACHE') ||
+	          PropertiesService.getScriptProperties().getProperty('NYT_CACHE');
 	if (!raw) return { byBookId: {}, byIsbn: {} };
 	var cache; try { cache = JSON.parse(raw); } catch (e) { return { byBookId: {}, byIsbn: {} }; }
 	var sheet = _ss().getSheetByName(SHEET_LIBRARY);
@@ -2547,7 +2630,8 @@ function clientGetNYTBadgesForLibrary() {
 }
 
 function clientGetNYTFeed() {
-	var raw = PropertiesService.getScriptProperties().getProperty('NYT_FEED_CURRENT');
+	var raw = CacheService.getScriptCache().get('NYT_FEED_CURRENT') ||
+	          PropertiesService.getScriptProperties().getProperty('NYT_FEED_CURRENT');
 	if (!raw) return { updatedAt: '', lists: [] };
 	try {
 		var parsed = JSON.parse(raw);
@@ -2565,6 +2649,27 @@ function installNYTWeeklyTrigger() {
 	}
 	ScriptApp.newTrigger('clientRefreshNYTCache').timeBased().everyWeeks(1)
 		.onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(3).create();
+}
+
+function _scheduleInitialNYTWarmup() {
+	if (!_getNytApiKey()) return;
+	var triggers = ScriptApp.getProjectTriggers();
+	for (var i = 0; i < triggers.length; i++) {
+		if (triggers[i].getHandlerFunction() === 'runInitialNYTWarmup') return;
+	}
+	ScriptApp.newTrigger('runInitialNYTWarmup').timeBased().after(60 * 1000).create();
+}
+
+function runInitialNYTWarmup() {
+	try { clientRefreshNYTCache(); } catch (e) { _log('warn', 'runInitialNYTWarmup', e); }
+	try {
+		var triggers = ScriptApp.getProjectTriggers();
+		for (var i = 0; i < triggers.length; i++) {
+			if (triggers[i].getHandlerFunction() === 'runInitialNYTWarmup') {
+				ScriptApp.deleteTrigger(triggers[i]);
+			}
+		}
+	} catch (cleanupErr) { _log('warn', 'runInitialNYTWarmup cleanup', cleanupErr); }
 }
 
 // =====================================================================
@@ -2631,28 +2736,46 @@ function resetDemoData() {
 }
 
 function onOpen() {
-	// Heavy initialization (sheet structure + demo seed + My Year rebuild) is
-	// idempotent but slow (10-30s). Only run it ONCE on first open; after that
-	// it's available on-demand via the Advanced menu. This keeps daily opens snappy
-	// and avoids burning Apps Script quota on every open.
+	// First-open auto-setup: do the buyer setup automatically, but keep the
+	// sheet responsive. Anything expensive gets deferred to a trigger.
 	try {
 		var props = PropertiesService.getScriptProperties();
 		if (props.getProperty('SHEETS_INITIALIZED') !== '1') {
+			// 1. Build sheet tabs, seed demo books, restyle theme.
 			_dbLiteInitializeSheets();
+
+			// 2. Install the live sheet→app sync trigger.
+			try {
+				var hasSyncTrigger = false;
+				var existing = ScriptApp.getProjectTriggers();
+				for (var i = 0; i < existing.length; i++) {
+					if (existing[i].getHandlerFunction() === 'onEditSyncHandler') { hasSyncTrigger = true; break; }
+				}
+				if (!hasSyncTrigger) ScriptApp.newTrigger('onEditSyncHandler').forSpreadsheet(_ss()).onEdit().create();
+			} catch (eSync) { _log('warn', 'onOpen', 'sync trigger: ' + eSync); }
+
+			// 3. If NYT is enabled, install the weekly refresh trigger and queue
+			//    a one-time warmup so first open is fast.
+			try {
+				if (_getNytApiKey()) {
+					var hasNytTrigger = false;
+					for (var j = 0; j < existing.length; j++) {
+						if (existing[j].getHandlerFunction() === 'clientRefreshNYTCache') { hasNytTrigger = true; break; }
+					}
+					if (!hasNytTrigger) {
+						ScriptApp.newTrigger('clientRefreshNYTCache').timeBased().everyWeeks(1)
+							.onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(3).create();
+					}
+					_scheduleInitialNYTWarmup();
+				}
+			} catch (eNyt) { _log('warn', 'onOpen', 'nyt setup: ' + eNyt); }
+
 			props.setProperty('SHEETS_INITIALIZED', '1');
 		}
 	} catch (e) { _log('error', 'onOpen', e); }
 
 	try {
 		var ui = SpreadsheetApp.getUi();
-		var advanced = ui.createMenu('Advanced')
-			.addItem('Refresh NYT Bestseller Cache', 'clientRefreshNYTCache')
-			.addItem('Install Weekly NYT Refresh', 'installNYTWeeklyTrigger')
-			.addItem('Install Live Sync Trigger',  'installSyncTrigger')
-			.addSeparator()
-			.addItem('Rebuild Sheet Structure', 'initializeSheets')
-			.addItem('🔄 Reset Demo Data (fix column order)', 'resetDemoData');
-
 		var isDeployed = false;
 		try { isDeployed = !!ScriptApp.getService().getUrl(); } catch(e) {}
 
@@ -2662,9 +2785,17 @@ function onOpen() {
 			.addSeparator()
 			.addItem('🎨 Refresh Styling & Colors', '_reStyleCurrentTheme')
 			.addItem('🗑  Clear All Books & Data',  'clientClearDemoData')
-			.addSeparator()
-			.addSubMenu(advanced)
 			.addToUi();
+
+		// Auto-popup the setup wizard on first open if not yet deployed.
+		// Stored on document properties so it only fires once per buyer.
+		try {
+			var docProps = PropertiesService.getDocumentProperties();
+			if (!isDeployed && docProps.getProperty('WELCOMED') !== '1') {
+				docProps.setProperty('WELCOMED', '1');
+				_setupMyApp();
+			}
+		} catch (eWelcome) {}
 	} catch (e) {}
 }
 
@@ -2691,23 +2822,30 @@ function _setupMyApp() {
 	var existingUrl = '';
 	try { existingUrl = ScriptApp.getService().getUrl() || ''; } catch(e) {}
 	if (existingUrl) { _openWebApp(); return; }
+	var scriptEditorUrl = _getScriptEditorUrl();
 
 	var html = HtmlService.createHtmlOutput(
 		'<style>*{box-sizing:border-box;margin:0;padding:0}'
-		+ 'body{font-family:"Google Sans",Arial,sans-serif;padding:16px 18px;font-size:13px;color:#1f2937}'
+		+ 'body{font-family:"Google Sans",Arial,sans-serif;padding:16px 18px;font-size:13px;color:#1f2937;background:#fff}'
 		+ '.hd{text-align:center;margin-bottom:14px}'
 		+ '.hd .ico{font-size:32px;line-height:1;margin-bottom:6px}'
-		+ '.hd h2{font-size:15px;font-weight:800;color:#111827;margin-bottom:2px}'
-		+ '.hd p{color:#9ca3af;font-size:11px}'
+		+ '.hd h2{font-size:16px;font-weight:800;color:#111827;margin-bottom:4px}'
+		+ '.hd p{color:#6b7280;font-size:11px;line-height:1.45}'
+		+ '.note{margin:0 0 12px;padding:10px 11px;border-radius:10px;background:#eff6ff;border:1px solid #bfdbfe}'
+		+ '.note b{display:block;color:#1d4ed8;font-size:11.5px;margin-bottom:3px}'
+		+ '.note span{display:block;color:#475569;font-size:11px;line-height:1.45}'
 		+ '.step{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #f3f4f6;align-items:flex-start}'
 		+ '.num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#2563eb;color:#fff;'
 		+ 'display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800}'
 		+ '.st{font-weight:700;font-size:12px;margin-bottom:1px}'
 		+ '.sb{color:#6b7280;font-size:11.5px;line-height:1.4}'
 		+ '.sb b{color:#374151}'
-		+ '.btn{width:100%;padding:11px;background:#2563eb;color:#fff;border:none;border-radius:8px;'
+		+ '.quick{display:block;width:100%;text-align:center;text-decoration:none;margin:0 0 10px;padding:10px 12px;'
+		+ 'border-radius:10px;background:#e0e7ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px;font-weight:700}'
+		+ '.btn{width:100%;padding:12px;background:#2563eb;color:#fff;border:none;border-radius:10px;'
 		+ 'font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:12px}'
 		+ '.btn:disabled{opacity:0.5;cursor:default}'
+		+ '.sub{margin-top:6px;color:#6b7280;font-size:10.5px;text-align:center;line-height:1.4}'
 		+ '.ok{display:none;margin-top:12px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;'
 		+ 'border-radius:8px;text-align:center}'
 		+ '.ok .tick{font-size:20px;margin-bottom:5px}'
@@ -2718,31 +2856,29 @@ function _setupMyApp() {
 		+ '#msg{min-height:14px;margin-top:7px;font-size:11px;color:#ef4444;text-align:center}'
 		+ '</style>'
 		+ '<div class="hd"><div class="ico">📖</div>'
-		+ '<h2>Launch Your Reading App</h2>'
-		+ '<p>One-time setup &bull; about 2 minutes</p></div>'
+		+ '<h2>Set Up Your Reading App</h2>'
+		+ '<p>This is a one-time Google step. After this, you will only open your app link.</p></div>'
+		+ '<div class="note"><b>Google security note</b>'
+		+ '<span>If Google shows "This app isn\'t verified," click <b>Advanced</b> and continue. That warning is normal for personal Google Sheets tools.</span></div>'
+		+ '<a class="quick" href="' + scriptEditorUrl + '" target="_blank">Open Apps Script Now ↗</a>'
 		+ '<div class="step"><div class="num">1</div><div>'
 		+ '<div class="st">Open Apps Script</div>'
-		+ '<div class="sb">Click <b>Extensions</b> &rarr; <b>Apps Script</b>. It opens in a new tab.</div></div></div>'
+		+ '<div class="sb">Use the button above (fastest), or click <b>Extensions</b> &rarr; <b>Apps Script</b>.</div></div></div>'
 		+ '<div class="step"><div class="num">2</div><div>'
-		+ '<div class="st">New Deployment</div>'
-		+ '<div class="sb">Click <b>Deploy</b> (top right) &rarr; <b>New deployment</b>.</div></div></div>'
+		+ '<div class="st">Create a Web App</div>'
+		+ '<div class="sb">Click <b>Deploy</b> &rarr; <b>New deployment</b>, then choose <b>Web app</b>.</div></div></div>'
 		+ '<div class="step"><div class="num">3</div><div>'
-		+ '<div class="st">Choose Web App</div>'
-		+ '<div class="sb">Click the <b>&#9881; gear</b> next to &ldquo;Select type&rdquo; &rarr; <b>Web app</b>.</div></div></div>'
+		+ '<div class="st">Use these settings</div>'
+		+ '<div class="sb"><b>Execute as:</b> Me &nbsp;&bull;&nbsp; <b>Who has access:</b> Anyone</div></div></div>'
 		+ '<div class="step"><div class="num">4</div><div>'
-		+ '<div class="st">Set Permissions</div>'
-		+ '<div class="sb"><b>Execute as</b>: Me &nbsp;&bull;&nbsp; <b>Who has access</b>: Anyone</div></div></div>'
-		+ '<div class="step"><div class="num">5</div><div>'
-		+ '<div class="st">Deploy!</div>'
-		+ '<div class="sb">Click the blue <b>Deploy</b> button. Approve the Google popup. Copy your URL.</div></div></div>'
-		+ '<div class="step"><div class="num">6</div><div>'
-		+ '<div class="st">Come Back Here</div>'
-		+ '<div class="sb">Switch back to this tab and click the button below.</div></div></div>'
-		+ '<button class="btn" id="doneBtn" onclick="checkUrl()">\u2713 I\'ve Deployed \u2014 Show My URL</button>'
+		+ '<div class="st">Deploy, then come back here</div>'
+		+ '<div class="sb">Click <b>Deploy</b>, approve Google once, then return to this tab and press the button below.</div></div></div>'
+		+ '<button class="btn" id="doneBtn" onclick="checkUrl()">Find My App Link</button>'
+		+ '<div class="sub">Your NYT badges may take about a minute to appear the first time while the bestseller cache warms up.</div>'
 		+ '<div id="msg"></div>'
 		+ '<div class="ok" id="ok">'
 		+ '<div class="tick">\uD83C\uDF89</div>'
-		+ '<p>Your reading app is live!</p>'
+		+ '<p>Your reading app is ready.</p>'
 		+ '<a id="appLink" href="#" target="_blank">Open My Reading App \u2197</a>'
 		+ '<small>Bookmark this link \u2014 it\'s yours forever.</small></div>'
 		+ '<script>'
@@ -2755,18 +2891,29 @@ function _setupMyApp() {
 		+ 'if(u){'
 		+ 'document.getElementById("appLink").href=u;'
 		+ 'document.getElementById("ok").style.display="block";'
+		+ 'try{window.open(u,"_blank");}catch(e){}'
 		+ 'btn.style.display="none";msg.textContent="";'
 		+ '}else{'
-		+ 'msg.textContent="Not deployed yet \u2014 finish step 5 and try again.";'
+		+ 'msg.textContent="Not seeing your app yet. Finish the Deploy step in Apps Script, then try again.";'
 		+ 'btn.disabled=false;'
 		+ '}})'
 		+ '.withFailureHandler(function(){'
-		+ 'msg.textContent="Something went wrong. Try again.";'
+		+ 'msg.textContent="Could not find your app link yet. Try again in a few seconds.";'
 		+ 'btn.disabled=false;})'
 		+ '._checkDeployment();}'
 		+ '<\/script>'
-	).setWidth(420).setHeight(530);
+	).setWidth(440).setHeight(560);
 	SpreadsheetApp.getUi().showModalDialog(html, 'Set Up My Reading App');
+}
+
+function _getScriptEditorUrl() {
+	try {
+		var sid = ScriptApp.getScriptId();
+		if (!sid) return 'https://script.google.com/home';
+		return 'https://script.google.com/home/projects/' + sid + '/edit';
+	} catch (e) {
+		return 'https://script.google.com/home';
+	}
 }
 
 function _checkDeployment() {
