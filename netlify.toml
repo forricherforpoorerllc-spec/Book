@@ -1,0 +1,5 @@
+[build]
+  # Publish from the repo root — your index.html lives there.
+  publish = "."
+  # No build step needed for static HTML. If you want to obfuscate, see below.
+  command = ""
