@@ -1628,6 +1628,51 @@
       text-overflow: ellipsis;
     }
 
+    /* Hover-only info tooltip on library book cards */
+    .book-card { position: relative; }
+    .book-hover-info {
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 6px);
+      transform: translateX(-50%) translateY(4px);
+      width: max-content;
+      max-width: 220px;
+      background: rgba(15, 23, 42, 0.96);
+      color: #fff;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      text-align: center;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.18s ease, transform 0.18s ease;
+      z-index: 50;
+      white-space: normal;
+    }
+    .book-hover-info::after {
+      content: '';
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border: 5px solid transparent;
+      border-top-color: rgba(15, 23, 42, 0.96);
+    }
+    .book-card:hover .book-hover-info,
+    .book-card:focus-within .book-hover-info {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    .book-hover-info .hi-title { font-weight: 700; display: block; }
+    .book-hover-info .hi-author { display: block; opacity: 0.85; margin-top: 2px; }
+    .book-hover-info .hi-meta { display: block; margin-top: 4px; font-size: 0.72rem; opacity: 0.85; }
+    .book-hover-info .hi-stars { color: #facc15; }
+    @media (hover: none) {
+      .book-hover-info { display: none; }
+    }
+
     .stars {
       color: #facc15;
       letter-spacing: 0.2px;
@@ -7148,6 +7193,28 @@
       });
     }
 
+    function withTimeout(promise, ms, label) {
+      return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+          if (done) return;
+          done = true;
+          reject(new Error((label || 'Request') + ' timed out'));
+        }, ms);
+        promise.then(function(result) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          resolve(result);
+        }).catch(function(err) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+    }
+
     function fetchFreeEbookAvailability(isbn) {
       if (!isbn) return Promise.resolve({ available: false });
       if (hasServerRuntime()) return serverRun('clientCheckFreeEbook', isbn);
@@ -8068,9 +8135,43 @@
       };
     }
 
+    function _toServerBookId(id) {
+      var raw = String(id || '');
+      if (!raw) return '';
+      var byLocal = allBooks.find(function(b) { return String(b.id || '') === raw; });
+      if (byLocal) return String(byLocal._serverBookId || '');
+      var byServer = allBooks.find(function(b) { return String(b._serverBookId || '') === raw; });
+      if (byServer) return String(byServer._serverBookId || '');
+      return '';
+    }
+
+    function _normalizeServerBookIdList(ids) {
+      var source = Array.isArray(ids) ? ids : [];
+      var seen = {};
+      var out = [];
+      source.forEach(function(id) {
+        var serverId = _toServerBookId(id);
+        if (!serverId || seen[serverId]) return;
+        seen[serverId] = true;
+        out.push(serverId);
+      });
+      return out;
+    }
+
     function syncReadingOrderToServer(orderOverride) {
       if (!hasServerRuntime()) return;
-      serverRun('clientSaveReadingOrder', orderOverride || state.readingOrder).catch(function() {});
+      var normalized = _normalizeServerBookIdList(orderOverride || state.readingOrder);
+      serverRun('clientSaveReadingOrder', normalized).catch(function(err) {
+        console.warn('Reading order sync failed:', err);
+      });
+    }
+
+    function syncRecentIdsToServer(idsOverride) {
+      if (!hasServerRuntime()) return;
+      var normalized = _normalizeServerBookIdList(idsOverride || state.recentlyReadIds);
+      serverRun('clientSaveRecentIds', normalized).catch(function(err) {
+        console.warn('Recent IDs sync failed:', err);
+      });
     }
 
     function syncBookShelvesToServer(book) {
@@ -8078,15 +8179,36 @@
       serverRun('clientUpdateBook', book._serverBookId, { Shelves: toServerBookPayload(book).Shelves }).catch(function() {});
     }
 
+    function applyNytSnapshot(snapshot) {
+      if (!snapshot || typeof snapshot !== 'object') return;
+      if (snapshot.nytBadges && typeof snapshot.nytBadges === 'object') {
+        state.nytBadges = snapshot.nytBadges;
+      }
+      if (snapshot.nytBadgesByIsbn && typeof snapshot.nytBadgesByIsbn === 'object') {
+        state.nytBadgesByIsbn = snapshot.nytBadgesByIsbn;
+      }
+      if (Array.isArray(snapshot.nytFeed)) {
+        state.nytFeed = snapshot.nytFeed;
+      }
+      state.nytCacheDate = String(snapshot.nytCacheDate || state.nytCacheDate || '');
+    }
+
     function refreshFromServer() {
       if (!hasServerRuntime()) return Promise.resolve();
-      return serverRun('clientGetInitialData')
-        .then(function(data) {
+      return Promise.all([
+        serverRun('clientGetInitialData'),
+        serverRun('clientGetNytSnapshot').catch(function() { return null; })
+      ])
+        .then(function(results) {
+          var data = results[0];
+          var nytSnapshot = results[1];
           hydrateFromBackend(data);
+          applyNytSnapshot(nytSnapshot);
           fullRender();
         })
         .catch(function(err) {
           console.warn('Refresh from server failed:', err);
+          throw err;
         });
     }
 
@@ -10994,6 +11116,18 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       heroEl.addEventListener('scroll', function() { _updateHeroNavBtns(heroEl); });
     }
 
+    function computeLibraryPreviewLimit() {
+      const grid = document.getElementById('booksGrid');
+      const w = grid && (grid.clientWidth || (grid.parentElement && grid.parentElement.clientWidth)) || 0;
+      if (!w) return 48;
+      // Match minmax(88px, 1fr) and 8px gap from .books-grid CSS
+      const minCol = 88, gap = 8;
+      const cols = Math.max(1, Math.floor((w + gap) / (minCol + gap)));
+      // Aim for ~6 rows of cards, clamped to a sensible upper bound.
+      const rows = 6;
+      return Math.max(24, Math.min(120, cols * rows));
+    }
+
     function renderLibrary() {
       const allFiltered = filteredBooks();
       const totalCount = allBooks.length;
@@ -11066,8 +11200,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       const infoToggleEl = document.getElementById('libInfoToggle');
       if (infoToggleEl) infoToggleEl.checked = !!state.libraryInfoMode;
 
-      // Build books preview (cap at libraryPreviewLimit)
-      const limit = state.libraryPreviewLimit || 24;
+      // Build books preview (adaptive: fill the visible grid)
+      const limit = computeLibraryPreviewLimit();
       const previewBooks = allFiltered.slice(0, limit);
       const hasMore = allFiltered.length > limit;
 
@@ -11126,7 +11260,14 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
         : '';
       const shelfHtml = shelfTags ? `<div class="book-shelf-tags">${shelfTags}</div>` : '';
       const inModal = opts.inModal;
+      const hoverMetaParts = [];
+      if (statusLabel) hoverMetaParts.push(statusLabel);
+      if (book.format) hoverMetaParts.push(book.format);
+      const hiStarsHtml = stars ? '<span class="hi-meta hi-stars">' + stars + '</span>' : '';
+      const hiMetaHtml = hoverMetaParts.length ? '<span class="hi-meta">' + esc(hoverMetaParts.join(' • ')) + '</span>' : '';
+      const hoverInfoHtml = '<div class="book-hover-info" aria-hidden="true"><span class="hi-title">' + esc(book.title) + '</span><span class="hi-author">' + esc(book.author) + '</span>' + hiStarsHtml + hiMetaHtml + '</div>';
       return `<article class="book-card${selCls}" data-book-id="${book.id}"${inModal ? '' : ` data-drag-book-id="${book.id}"`} draggable="${inModal ? 'false' : 'true'}" title="${esc(book.title)}" role="button" tabindex="0" aria-label="${esc(book.title)} by ${esc(book.author)}, ${stars ? stars.length + ' stars' : 'unrated'}">
+        ${hoverInfoHtml}
         <div class="book-visual" style="background:${grad}">
           ${checkHtml}
           ${coverContent}
@@ -13776,8 +13917,15 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       renderTutorialStep();
     }
 
+    var _libResizeTimer = null;
     window.addEventListener('resize', function() {
       if (state.tourOpen) renderTutorialStep();
+      if (_libResizeTimer) clearTimeout(_libResizeTimer);
+      _libResizeTimer = setTimeout(function() {
+        if (typeof renderLibrary === 'function' && document.getElementById('booksGrid')) {
+          renderLibrary();
+        }
+      }, 180);
     });
 
     function bindEvents() {
@@ -18194,52 +18342,85 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       root.style.setProperty('--mobile-tabbar-offset', tabBarVisible ? ((tabBar.offsetHeight || 72) + 'px') : '0px');
     }
 
+    function dismissHydrationGate() {
+      var gate = document.getElementById('hydrationGate');
+      if (gate) gate.classList.add('hydration-done');
+    }
+
     function bootstrapApp() {
-      _audioEl = document.getElementById('audioPlayer');
-      loadData();
-      bindEvents();
-      fullRender();
-      syncMobileLayoutMetrics();
-      restoreAudiobookPlayback(state.currentAudioId);
+      // Hard fallback: never leave the hydration gate spinning forever.
+      var hydrationFailsafe = setTimeout(function() {
+        dismissHydrationGate();
+        console.warn('Hydration gate fallback activated');
+      }, 45000);
 
-      // Track listening time every 30s while audio is playing
-      setInterval(function() {
-        if (_audioEl && !_audioEl.paused && state.currentAudioId) {
-          state.totalListeningMins = (state.totalListeningMins || 0) + 0.5;
-          saveAudioPos();
-          saveData();
+      try {
+        _audioEl = document.getElementById('audioPlayer');
+        loadData();
+        bindEvents();
+        fullRender();
+        syncMobileLayoutMetrics();
+        restoreAudiobookPlayback(state.currentAudioId);
+
+        // Track listening time every 30s while audio is playing
+        setInterval(function() {
+          if (_audioEl && !_audioEl.paused && state.currentAudioId) {
+            state.totalListeningMins = (state.totalListeningMins || 0) + 0.5;
+            saveAudioPos();
+            saveData();
+          }
+        }, 30000);
+
+        if (!hasServerRuntime()) {
+          // No backend — hide gate immediately
+          clearTimeout(hydrationFailsafe);
+          dismissHydrationGate();
+          return;
         }
-      }, 30000);
 
-      if (!hasServerRuntime()) {
-        // No backend — hide gate immediately
-        var gate = document.getElementById('hydrationGate');
-        if (gate) gate.classList.add('hydration-done');
-        return;
+        // Show loading gate while fetching server data
+        var hydrationGate = document.getElementById('hydrationGate');
+        if (hydrationGate) hydrationGate.classList.remove('hydration-done');
+
+        withTimeout(serverRun('clientGetInitialData'), 25000, 'Initial sync')
+          .then(function(data) {
+            hydrateFromBackend(data);
+            clearTimeout(hydrationFailsafe);
+            dismissHydrationGate();
+            requestAnimationFrame(function() {
+              fullRender();
+            });
+            // Load NYT payload after core hydration so initial sync stays fast.
+            serverRun('clientGetNytSnapshot')
+              .then(function(snapshot) {
+                applyNytSnapshot(snapshot);
+                fullRender();
+              })
+              .catch(function() {});
+            // Show sync button now that backend is confirmed
+            var syncBtn = document.getElementById('syncFromSheetBtn');
+            if (syncBtn) syncBtn.style.display = '';
+            restoreAudiobookPlayback(state.currentAudioId).catch(function() {});
+          })
+          .catch(function(err) {
+            console.warn('Backend unavailable; continuing with mock/local data:', err);
+            clearTimeout(hydrationFailsafe);
+            dismissHydrationGate();
+            var errMsg = String((err && err.message) || err || '');
+            var authLikely = /authorize|authori[sz]ation|permission|oauth|timed out/i.test(errMsg);
+            showToast(
+              authLikely
+                ? '⚠️ Google authorization is required. Open Apps Script, run any function once, approve access, then reload.'
+                : '⚠️ Could not connect to your Google Sheet. Showing local data only.',
+              'error'
+            );
+          })
+          .then(function() {});
+      } catch (err) {
+        clearTimeout(hydrationFailsafe);
+        console.error('Bootstrap failed before hydration completed:', err);
+        dismissHydrationGate();
       }
-
-      // Show loading gate while fetching server data
-      var hydrationGate = document.getElementById('hydrationGate');
-      if (hydrationGate) hydrationGate.classList.remove('hydration-done');
-
-      serverRun('clientGetInitialData')
-        .then(function(data) {
-          hydrateFromBackend(data);
-          fullRender();
-          // Show sync button now that backend is confirmed
-          var syncBtn = document.getElementById('syncFromSheetBtn');
-          if (syncBtn) syncBtn.style.display = '';
-          return restoreAudiobookPlayback(state.currentAudioId);
-        })
-        .catch(function(err) {
-          console.warn('Backend unavailable; continuing with mock/local data:', err);
-          showToast('⚠️ Could not connect to your Google Sheet. Showing local data only.', 'error');
-        })
-        .then(function() {
-          // Always dismiss the gate — success or failure
-          var gate = document.getElementById('hydrationGate');
-          if (gate) gate.classList.add('hydration-done');
-        });
     }
 
     bootstrapApp();

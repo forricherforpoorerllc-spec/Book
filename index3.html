@@ -1628,6 +1628,51 @@
       text-overflow: ellipsis;
     }
 
+    /* Hover-only info tooltip on library book cards */
+    .book-card { position: relative; }
+    .book-hover-info {
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 6px);
+      transform: translateX(-50%) translateY(4px);
+      width: max-content;
+      max-width: 220px;
+      background: rgba(15, 23, 42, 0.96);
+      color: #fff;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      text-align: center;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.18s ease, transform 0.18s ease;
+      z-index: 50;
+      white-space: normal;
+    }
+    .book-hover-info::after {
+      content: '';
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border: 5px solid transparent;
+      border-top-color: rgba(15, 23, 42, 0.96);
+    }
+    .book-card:hover .book-hover-info,
+    .book-card:focus-within .book-hover-info {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    .book-hover-info .hi-title { font-weight: 700; display: block; }
+    .book-hover-info .hi-author { display: block; opacity: 0.85; margin-top: 2px; }
+    .book-hover-info .hi-meta { display: block; margin-top: 4px; font-size: 0.72rem; opacity: 0.85; }
+    .book-hover-info .hi-stars { color: #facc15; }
+    @media (hover: none) {
+      .book-hover-info { display: none; }
+    }
+
     .stars {
       color: #facc15;
       letter-spacing: 0.2px;
@@ -11064,6 +11109,18 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       heroEl.addEventListener('scroll', function() { _updateHeroNavBtns(heroEl); });
     }
 
+    function computeLibraryPreviewLimit() {
+      const grid = document.getElementById('booksGrid');
+      const w = grid && (grid.clientWidth || (grid.parentElement && grid.parentElement.clientWidth)) || 0;
+      if (!w) return 48;
+      // Match minmax(88px, 1fr) and 8px gap from .books-grid CSS
+      const minCol = 88, gap = 8;
+      const cols = Math.max(1, Math.floor((w + gap) / (minCol + gap)));
+      // Aim for ~6 rows of cards, clamped to a sensible upper bound.
+      const rows = 6;
+      return Math.max(24, Math.min(120, cols * rows));
+    }
+
     function renderLibrary() {
       const allFiltered = filteredBooks();
       const totalCount = allBooks.length;
@@ -11136,8 +11193,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       const infoToggleEl = document.getElementById('libInfoToggle');
       if (infoToggleEl) infoToggleEl.checked = !!state.libraryInfoMode;
 
-      // Build books preview (cap at libraryPreviewLimit)
-      const limit = state.libraryPreviewLimit || 24;
+      // Build books preview (adaptive: fill the visible grid)
+      const limit = computeLibraryPreviewLimit();
       const previewBooks = allFiltered.slice(0, limit);
       const hasMore = allFiltered.length > limit;
 
@@ -11196,7 +11253,14 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
         : '';
       const shelfHtml = shelfTags ? `<div class="book-shelf-tags">${shelfTags}</div>` : '';
       const inModal = opts.inModal;
+      const hoverMetaParts = [];
+      if (statusLabel) hoverMetaParts.push(statusLabel);
+      if (book.format) hoverMetaParts.push(book.format);
+      const hiStarsHtml = stars ? '<span class="hi-meta hi-stars">' + stars + '</span>' : '';
+      const hiMetaHtml = hoverMetaParts.length ? '<span class="hi-meta">' + esc(hoverMetaParts.join(' • ')) + '</span>' : '';
+      const hoverInfoHtml = '<div class="book-hover-info" aria-hidden="true"><span class="hi-title">' + esc(book.title) + '</span><span class="hi-author">' + esc(book.author) + '</span>' + hiStarsHtml + hiMetaHtml + '</div>';
       return `<article class="book-card${selCls}" data-book-id="${book.id}"${inModal ? '' : ` data-drag-book-id="${book.id}"`} draggable="${inModal ? 'false' : 'true'}" title="${esc(book.title)}" role="button" tabindex="0" aria-label="${esc(book.title)} by ${esc(book.author)}, ${stars ? stars.length + ' stars' : 'unrated'}">
+        ${hoverInfoHtml}
         <div class="book-visual" style="background:${grad}">
           ${checkHtml}
           ${coverContent}
@@ -13846,8 +13910,15 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       renderTutorialStep();
     }
 
+    var _libResizeTimer = null;
     window.addEventListener('resize', function() {
       if (state.tourOpen) renderTutorialStep();
+      if (_libResizeTimer) clearTimeout(_libResizeTimer);
+      _libResizeTimer = setTimeout(function() {
+        if (typeof renderLibrary === 'function' && document.getElementById('booksGrid')) {
+          renderLibrary();
+        }
+      }, 180);
     });
 
     function bindEvents() {
