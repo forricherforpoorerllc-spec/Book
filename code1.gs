@@ -1195,6 +1195,21 @@ var _VIEW_THEME_MAP = { 'index': 'romantic', 'index2': 'horizon', 'index3': 'blo
 // ── Serve the UI ────────────────────────────────────────────────────────
 function doGet(e) {
 	var view = _resolveWebAppView(e);
+	// Self-register the live deployment URL on every successful page load.
+	// We are by definition being served from a working URL right now — so
+	// trust it, store it, and the sheet menu's "📖 Open My App" item will
+	// always have a verified, current link without needing UrlFetchApp pings
+	// or any other guesswork. This survives redeploys: the next time the
+	// owner visits, the latest /exec URL gets saved automatically.
+	try {
+		var liveUrl = ScriptApp.getService().getUrl();
+		if (liveUrl && /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/(exec|dev)/.test(liveUrl)) {
+			var dprops = PropertiesService.getDocumentProperties();
+			if (dprops.getProperty('WEB_APP_URL') !== liveUrl) {
+				dprops.setProperty('WEB_APP_URL', liveUrl);
+			}
+		}
+	} catch (eRegister) { /* never block page load on this */ }
 	// Seed the product-specific default theme once on first access so the sheet
 	// initialises with the right palette for this product variant.
 	var props = PropertiesService.getScriptProperties();
@@ -2864,7 +2879,7 @@ function onOpen() {
 	try {
 		var ui = SpreadsheetApp.getUi();
 		var isDeployed = false;
-		try { isDeployed = !!ScriptApp.getService().getUrl(); } catch(e) {}
+		try { isDeployed = !!_getWebAppUrl(); } catch(e) {}
 
 		ui.createMenu(_buildJourneyTitle())
 			.addItem(isDeployed ? '📖 Open My App' : '🚀 Set Up My App',
@@ -2930,6 +2945,10 @@ function onOpen() {
 function _openWebApp() {
 	var url = _getWebAppUrl();
 	if (!url) { _setupMyApp(); return; }
+	// No fetch, no validation, no quota cost. The saved URL was registered
+	// by doGet() the last time the app was actually loaded — if it’s set,
+	// the deployment was live then. Redeploys auto-update the saved URL on
+	// the very next visit, so this stays current.
 	var safeUrl = String(url).replace(/[<>"']/g, '');
 	// Anchor target=_blank inside an HtmlService modal dialog is rewritten
 	// through Google's URL gateway, which can show a "Sorry, unable to open
@@ -3109,15 +3128,38 @@ function _isValidWebAppUrl(url) {
 }
 
 function _getWebAppUrl() {
+	// IMPORTANT: container-bound scripts have an unreliable
+	// ScriptApp.getService().getUrl(). When a buyer copies the spreadsheet,
+	// they get a copy of the script but NOT the seller's deployment, so the
+	// auto-detected URL can be stale, point to the seller's deployment
+	// (which the buyer cannot access — hence the Drive "unable to open"
+	// error), or be null. The only reliable source is the URL the buyer
+	// pasted into the setup wizard, stored on document properties.
 	try {
 		var saved = PropertiesService.getDocumentProperties().getProperty('WEB_APP_URL') || '';
 		if (_isValidWebAppUrl(saved)) return saved;
 	} catch (eSaved) {}
+	return '';
+}
+
+function _getAutoDetectedWebAppUrl() {
+	// Best-effort secondary lookup. Used only inside the setup wizard
+	// ("Find My App Link") — never trusted as the primary source.
 	try {
 		var auto = ScriptApp.getService().getUrl() || '';
 		if (_isValidWebAppUrl(auto)) return auto;
 	} catch (eAuto) {}
 	return '';
+}
+
+function _validateWebAppUrl(url) {
+	// Lightweight syntactic check only. The authoritative source of truth is
+	// the URL self-registered by doGet() on every successful page load — if
+	// it's saved, the deployment is live, period. We deliberately avoid
+	// UrlFetchApp pings because (a) they cost daily quota, (b) they fail
+	// inside the iframe sandbox of HtmlService dialogs, and (c) they can
+	// false-negative on slow cold starts.
+	return _isValidWebAppUrl(url);
 }
 
 function _saveManualWebAppUrl(url) {
@@ -3128,7 +3170,18 @@ function _saveManualWebAppUrl(url) {
 }
 
 function _checkDeployment() {
-	return _getWebAppUrl();
+	// Used by the setup wizard's "Find My App Link" button. doGet()
+	// auto-registers the live URL on every page load, so a saved URL is
+	// reliable. Falls back to ScriptApp.getService().getUrl() only if no
+	// page has been served yet (first-ever setup before any open).
+	var saved = _getWebAppUrl();
+	if (saved) return saved;
+	var auto = _getAutoDetectedWebAppUrl();
+	if (auto) {
+		try { PropertiesService.getDocumentProperties().setProperty('WEB_APP_URL', auto); } catch (e) {}
+		return auto;
+	}
+	return '';
 }
 
 function _reStyleCurrentTheme() {
