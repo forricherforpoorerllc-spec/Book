@@ -90,6 +90,61 @@ function _dbLiteInitializeSheets() {
 	_dbLiteArrangeTabs(ss);
 }
 
+function _dbLiteEnsureLibraryWebAppSheet(sheet) {
+	if (!sheet) return;
+	var totalCols = LIBRARY_HEADERS.length + LIBRARY_DATA_COL - 1;
+	_ensureColumns(sheet, totalCols);
+	_ensureRows(sheet, LIBRARY_DATA_ROW);
+	var headerRange = sheet.getRange(LIBRARY_HEADER_ROW, 1, 1, LIBRARY_VISIBLE_COUNT + 1);
+	var currentHeaders = headerRange.getValues()[0];
+	var hasHeaders = currentHeaders.some(function(v) { return String(v || '').trim() !== ''; });
+	if (hasHeaders) return;
+	var hdrLabels = [''];
+	LIBRARY_HEADERS.slice(0, LIBRARY_VISIBLE_COUNT).forEach(function(h) {
+		var label = (DISPLAY_MAP[h] || h).toUpperCase();
+		if (h === 'DateStarted') label = 'DATE STARTED';
+		else if (h === 'DateFinished') label = 'DATE FINISHED';
+		hdrLabels.push(label);
+	});
+	headerRange.setValues([hdrLabels]);
+}
+
+function _dbLiteEnsureWebAppDataReady() {
+	var library = _getOrCreateSheet(SHEET_LIBRARY, LIBRARY_HEADERS);
+	_getOrCreateSheet(SHEET_CHALLENGES, CHALLENGE_HEADERS);
+	_getOrCreateSheet(SHEET_SHELVES, SHELF_HEADERS);
+	var profile = _getOrCreateSheet(SHEET_PROFILE, PROFILE_HEADERS);
+	_getOrCreateSheet(SHEET_AUDIOBOOKS, AUDIOBOOK_HEADERS);
+	_dbLiteEnsureLibraryWebAppSheet(library);
+	_dbLiteEnsureProfileDefaults(profile);
+}
+
+function _queueDeferredInitialSetup() {
+	var triggers = ScriptApp.getProjectTriggers();
+	for (var i = 0; i < triggers.length; i++) {
+		if (triggers[i].getHandlerFunction() === '_runDeferredInitialSetup') return;
+	}
+	ScriptApp.newTrigger('_runDeferredInitialSetup').timeBased().after(10 * 1000).create();
+}
+
+function _runDeferredInitialSetup() {
+	try {
+		_dbLiteInitializeSheets();
+		PropertiesService.getScriptProperties().setProperty('SHEETS_INITIALIZED', '1');
+	} catch (e) {
+		_log('warn', '_runDeferredInitialSetup', e);
+	} finally {
+		try {
+			var triggers = ScriptApp.getProjectTriggers();
+			for (var i = 0; i < triggers.length; i++) {
+				if (triggers[i].getHandlerFunction() === '_runDeferredInitialSetup') {
+					ScriptApp.deleteTrigger(triggers[i]);
+				}
+			}
+		} catch (cleanupErr) {}
+	}
+}
+
 function _dbLiteStyleHiddenHeader(sheet, headers, label, themeName) {
 	if (!sheet) return;
 	var t = _dbLiteTheme(themeName);
@@ -1147,9 +1202,6 @@ function doGet(e) {
 		props.setProperty('PRODUCT_DEFAULT_THEME', _VIEW_THEME_MAP[view] || 'romantic');
 		props.setProperty('PRODUCT_THEME_SEEDED', '1');
 	}
-	if (props.getProperty('SHEETS_INITIALIZED') !== '1') {
-		try { _dbLiteInitializeSheets(); props.setProperty('SHEETS_INITIALIZED', '1'); } catch(eSeed) {}
-	}
 	var title = _buildJourneyTitle();
 	var output = HtmlService.createHtmlOutputFromFile(view)
 		.setTitle(title)
@@ -1356,6 +1408,14 @@ function _ensureRows(sheet, needed) {
 	if (current < needed) sheet.insertRowsAfter(current, needed - current);
 }
 
+function _appendHiddenSheetRow(sheet, rowValues) {
+	if (!sheet || !rowValues || !rowValues.length) return 0;
+	var writeRow = Math.max(HIDDEN_DATA_ROW, sheet.getLastRow() + 1);
+	_ensureRows(sheet, writeRow);
+	sheet.getRange(writeRow, 1, 1, rowValues.length).setValues([rowValues]);
+	return writeRow;
+}
+
 function _sheetToObjects(sheet, internalHeaders) {
 	if (!sheet) return [];
 	var data = sheet.getDataRange().getValues();
@@ -1405,7 +1465,7 @@ function _getProfileDataRow(sheet) {
 // LIBRARY_DATA_COL (B), header at LIBRARY_HEADER_ROW (8), data at LIBRARY_DATA_ROW (9).
 function _libSheetToObjects(sheet) {
 	if (!sheet) return [];
-	var lastRow = sheet.getLastRow();
+	var lastRow = _getLibLastDataRow(sheet);
 	if (lastRow < LIBRARY_DATA_ROW) return [];
 	var numRows = lastRow - LIBRARY_DATA_ROW + 1;
 	var data = sheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL, numRows, LIBRARY_HEADERS.length).getValues();
@@ -1418,9 +1478,22 @@ function _libSheetToObjects(sheet) {
 	});
 }
 
+function _getLibLastDataRow(sheet) {
+	if (!sheet) return LIBRARY_DATA_ROW - 1;
+	var titleCol = LIBRARY_DATA_COL; // Title is first data column in this layout
+	var maxRow = sheet.getMaxRows();
+	if (maxRow < LIBRARY_DATA_ROW) return LIBRARY_DATA_ROW - 1;
+	var count = maxRow - LIBRARY_DATA_ROW + 1;
+	var vals = sheet.getRange(LIBRARY_DATA_ROW, titleCol, count, 1).getValues();
+	for (var i = vals.length - 1; i >= 0; i--) {
+		if (String(vals[i][0] || '').trim() !== '') return LIBRARY_DATA_ROW + i;
+	}
+	return LIBRARY_DATA_ROW - 1;
+}
+
 function _findLibRowByBookId(sheet, bookId) {
 	if (!sheet || !bookId) return -1;
-	var lastRow = sheet.getLastRow();
+	var lastRow = _getLibLastDataRow(sheet);
 	if (lastRow < LIBRARY_DATA_ROW) return -1;
 	var numRows = lastRow - LIBRARY_DATA_ROW + 1;
 	var bookIdCol = LIBRARY_DATA_COL + LIBRARY_HEADERS.indexOf('BookId');
@@ -1435,15 +1508,8 @@ function _findLibRowByBookId(sheet, bookId) {
 // getLastRow() is unreliable because col A has pre-filled formulas (rows 9-5008),
 // so we scan backwards through the Title column (col B) to find the last real entry.
 function _nextLibDataRow(sheet) {
-	var titleCol = LIBRARY_DATA_COL; // Title is index 0 → LIBRARY_DATA_COL + 0
-	var maxRow = sheet.getMaxRows();
-	if (maxRow < LIBRARY_DATA_ROW) return LIBRARY_DATA_ROW;
-	var count = maxRow - LIBRARY_DATA_ROW + 1;
-	var vals = sheet.getRange(LIBRARY_DATA_ROW, titleCol, count, 1).getValues();
-	for (var i = vals.length - 1; i >= 0; i--) {
-		if (String(vals[i][0] || '').trim() !== '') return LIBRARY_DATA_ROW + i + 1;
-	}
-	return LIBRARY_DATA_ROW;
+	var lastDataRow = _getLibLastDataRow(sheet);
+	return lastDataRow >= LIBRARY_DATA_ROW ? (lastDataRow + 1) : LIBRARY_DATA_ROW;
 }
 
 function _colLetter(col) {
@@ -1529,7 +1595,7 @@ function _numToStars(n) {
 function clientGetInitialData() {
 	var _profileCheck = _ss().getSheetByName(SHEET_PROFILE);
 	if (!_profileCheck || _profileCheck.getLastRow() < 2) {
-		initializeSheets();
+		_dbLiteEnsureWebAppDataReady();
 	}
 
 	var libSheet   = _ss().getSheetByName(SHEET_LIBRARY);
@@ -1570,9 +1636,6 @@ function clientGetInitialData() {
 			ISBN: isbnNorm, OLID: row.OLID || '', AuthorKey: row.AuthorKey || ''
 		};
 	});
-
-	var nytBundle = clientGetNYTBadgesForLibrary();
-	var nytFeedBundle = clientGetNYTFeed();
 
 	var goals = _sheetToObjects(chalSheet, CHALLENGE_HEADERS).map(function(row) {
 		return {
@@ -1635,6 +1698,19 @@ function clientGetInitialData() {
 		lastAudioId: String(profileData.LastAudioId || ''),
 		totalListeningMins: Number(profileData.TotalListeningMins) || 0,
 		audiobooks: audiobooks,
+		nytBadges: {},
+		nytBadgesByIsbn: {},
+		nytFeed: [],
+		nytCacheDate: PropertiesService.getScriptProperties().getProperty('NYT_CACHE_DATE') || ''
+	};
+}
+
+function clientGetNytSnapshot() {
+	var nytBundle = { byBookId: {}, byIsbn: {} };
+	var nytFeedBundle = { lists: [], updatedAt: '' };
+	try { nytBundle = clientGetNYTBadgesForLibrary(); } catch (e) {}
+	try { nytFeedBundle = clientGetNYTFeed(); } catch (e) {}
+	return {
 		nytBadges: nytBundle.byBookId || {},
 		nytBadgesByIsbn: nytBundle.byIsbn || {},
 		nytFeed: nytFeedBundle.lists || [],
@@ -1654,6 +1730,7 @@ function clientAddBook(payload) {
 		// getLastRow() is inflated by the 5000 pre-filled col-A formulas.
 		var nextRow = _nextLibDataRow(sheet);
 		sheet.getRange(nextRow, LIBRARY_DATA_COL, 1, LIBRARY_HEADERS.length).setValues([row]);
+		_bumpSyncVersionSafe();
 		return { BookId: bookId };
 	} catch (e) { return { error: e.message }; }
 	finally { lock.releaseLock(); }
@@ -1691,6 +1768,7 @@ function clientUpdateBook(bookId, updates) {
 			dataRow[colIdx] = val;
 		});
 		sheet.getRange(rowIdx, LIBRARY_DATA_COL, 1, LIBRARY_HEADERS.length).setValues([dataRow]);
+		_bumpSyncVersionSafe();
 		return { success: true };
 	} catch (e) { return { error: e.message }; }
 	finally { lock.releaseLock(); }
@@ -1704,7 +1782,10 @@ function clientDeleteBook(bookId) {
 		var sheet = _ss().getSheetByName(SHEET_LIBRARY);
 		if (!sheet) return;
 		var rowIdx = _findLibRowByBookId(sheet, bookId);
-		if (rowIdx >= LIBRARY_DATA_ROW) sheet.deleteRow(rowIdx);
+		if (rowIdx >= LIBRARY_DATA_ROW) {
+			sheet.deleteRow(rowIdx);
+			_bumpSyncVersionSafe();
+		}
 	} catch (e) { return { error: e.message }; }
 	finally { lock.releaseLock(); }
 }
@@ -1787,6 +1868,7 @@ function clientImportGoodreadsCSV(rows) {
 		if (newRows.length > 0) {
 			var nextRow = _nextLibDataRow(sheet);
 			sheet.getRange(nextRow, LIBRARY_DATA_COL, newRows.length, LIBRARY_HEADERS.length).setValues(newRows);
+			_bumpSyncVersionSafe();
 		}
 		return { imported: newRows.length };
 	} catch (e) { return { error: e.message, imported: 0 }; }
@@ -1806,7 +1888,8 @@ function clientAddShelf(name, icon) {
 		if (!n) return { error: 'Shelf name is required.' };
 		var sheet = _getOrCreateSheet(SHEET_SHELVES, SHELF_HEADERS);
 		var shelfId = _uuid();
-		sheet.appendRow([shelfId, n, String(icon || '').slice(0, 50)]);
+		_appendHiddenSheetRow(sheet, [shelfId, n, String(icon || '').slice(0, 50)]);
+		_bumpSyncVersionSafe();
 		return { ShelfId: shelfId };
 	} catch (e) { return { error: e.message }; }
 }
@@ -1815,7 +1898,10 @@ function clientDeleteShelf(shelfId) {
 		if (!_validateId(shelfId)) return;
 		var sheet = _ss().getSheetByName(SHEET_SHELVES); if (!sheet) return;
 		var rowIdx = _findRowByCol(sheet, 0, shelfId);
-		if (rowIdx >= HIDDEN_DATA_ROW) sheet.deleteRow(rowIdx);
+		if (rowIdx >= HIDDEN_DATA_ROW) {
+			sheet.deleteRow(rowIdx);
+			_bumpSyncVersionSafe();
+		}
 	} catch (e) {}
 }
 function clientRenameShelf(shelfId, newName) {
@@ -1823,7 +1909,10 @@ function clientRenameShelf(shelfId, newName) {
 		if (!_validateId(shelfId)) return;
 		var sheet = _ss().getSheetByName(SHEET_SHELVES); if (!sheet) return;
 		var rowIdx = _findRowByCol(sheet, 0, shelfId);
-		if (rowIdx >= HIDDEN_DATA_ROW) sheet.getRange(rowIdx, 2).setValue(String(newName || '').slice(0, 200));
+		if (rowIdx >= HIDDEN_DATA_ROW) {
+			sheet.getRange(rowIdx, 2).setValue(String(newName || '').slice(0, 200));
+			_bumpSyncVersionSafe();
+		}
 	} catch (e) {}
 }
 function clientUpdateShelf(shelfId, updates) {
@@ -1832,10 +1921,18 @@ function clientUpdateShelf(shelfId, updates) {
 		var sheet = _ss().getSheetByName(SHEET_SHELVES); if (!sheet) return;
 		var rowIdx = _findRowByCol(sheet, 0, shelfId);
 		if (rowIdx < HIDDEN_DATA_ROW) return;
+		var changed = false;
 		var newName = updates.Name !== undefined ? updates.Name : updates.name;
-		if (newName !== undefined) sheet.getRange(rowIdx, 2).setValue(String(newName).slice(0, 200));
+		if (newName !== undefined) {
+			sheet.getRange(rowIdx, 2).setValue(String(newName).slice(0, 200));
+			changed = true;
+		}
 		var newIcon = updates.Icon !== undefined ? updates.Icon : updates.icon;
-		if (newIcon !== undefined) sheet.getRange(rowIdx, 3).setValue(String(newIcon).slice(0, 50));
+		if (newIcon !== undefined) {
+			sheet.getRange(rowIdx, 3).setValue(String(newIcon).slice(0, 50));
+			changed = true;
+		}
+		if (changed) _bumpSyncVersionSafe();
 	} catch (e) {}
 }
 
@@ -1845,9 +1942,10 @@ function clientAddChallenge(payload) {
 		if (!payload) return { error: 'Payload required.' };
 		var sheet = _getOrCreateSheet(SHEET_CHALLENGES, CHALLENGE_HEADERS);
 		var id = _uuid();
-		sheet.appendRow([id, String(payload.name || 'New Challenge').slice(0, 200),
+		_appendHiddenSheetRow(sheet, [id, String(payload.name || 'New Challenge').slice(0, 200),
 			String(payload.icon || 'GOAL').slice(0, 50),
 			Number(payload.current) || 0, Number(payload.target) || 10]);
+		_bumpSyncVersionSafe();
 		return { ChallengeId: id };
 	} catch (e) { return { error: e.message }; }
 }
@@ -1862,6 +1960,7 @@ function clientUpdateChallenge(challengeId, updates) {
 		if (updates.current !== undefined) row[3] = Number(updates.current);
 		if (updates.target !== undefined)  row[4] = Number(updates.target);
 		sheet.getRange(rowIdx, 1, 1, CHALLENGE_HEADERS.length).setValues([row]);
+		_bumpSyncVersionSafe();
 	} catch (e) {}
 }
 function clientDeleteChallenge(challengeId) {
@@ -1869,7 +1968,10 @@ function clientDeleteChallenge(challengeId) {
 		if (!_validateId(challengeId)) return;
 		var sheet = _ss().getSheetByName(SHEET_CHALLENGES); if (!sheet) return;
 		var rowIdx = _findRowByCol(sheet, 0, challengeId);
-		if (rowIdx >= HIDDEN_DATA_ROW) sheet.deleteRow(rowIdx);
+		if (rowIdx >= HIDDEN_DATA_ROW) {
+			sheet.deleteRow(rowIdx);
+			_bumpSyncVersionSafe();
+		}
 	} catch (e) {}
 }
 function clientSyncChallenges(challengesArray) {
@@ -1890,6 +1992,7 @@ function clientSyncChallenges(challengesArray) {
 			sheet.getRange(HIDDEN_DATA_ROW, 1, sheet.getLastRow() - HIDDEN_DATA_ROW + 1, CHALLENGE_HEADERS.length).clearContent();
 		}
 		sheet.getRange(HIDDEN_DATA_ROW, 1, rows.length, CHALLENGE_HEADERS.length).setValues(rows);
+		_bumpSyncVersionSafe();
 	} catch (e) {}
 	finally { lock.releaseLock(); }
 }
@@ -1906,6 +2009,7 @@ function clientSetSetting(key, value) {
 		var safeValue = (key === 'Theme') ? _validateTheme(value) : value;
 		var row = _getProfileDataRow(sheet);
 		sheet.getRange(row < HIDDEN_DATA_ROW ? HIDDEN_DATA_ROW : row, colIdx + 1).setValue(safeValue);
+		_bumpSyncVersionSafe();
 	} catch (e) {
 	} finally {
 		lock.releaseLock();
@@ -1945,6 +2049,7 @@ function clientSaveProfile(profileData) {
 		} else {
 			_ss().rename('My Reading Journey');
 		}
+		_bumpSyncVersionSafe();
 	} catch (e) {}
 	finally { lock.releaseLock(); }
 }
@@ -1963,7 +2068,10 @@ function clientSaveReadingOrder(orderArray) {
 		if (_getProfileDataRow(sheet) < HIDDEN_DATA_ROW) _dbLiteEnsureProfileDefaults(sheet);
 		var colIdx = PROFILE_HEADERS.indexOf('ReadingOrder');
 		var row = _getProfileDataRow(sheet);
-		if (colIdx >= 0) sheet.getRange(row < HIDDEN_DATA_ROW ? HIDDEN_DATA_ROW : row, colIdx + 1).setValue(JSON.stringify(orderArray));
+		if (colIdx >= 0) {
+			sheet.getRange(row < HIDDEN_DATA_ROW ? HIDDEN_DATA_ROW : row, colIdx + 1).setValue(JSON.stringify(orderArray));
+			_bumpSyncVersionSafe();
+		}
 	} catch (e) {}
 }
 function clientSaveRecentIds(idsArray) {
@@ -1973,7 +2081,10 @@ function clientSaveRecentIds(idsArray) {
 		if (_getProfileDataRow(sheet) < HIDDEN_DATA_ROW) _dbLiteEnsureProfileDefaults(sheet);
 		var colIdx = PROFILE_HEADERS.indexOf('RecentIds');
 		var row = _getProfileDataRow(sheet);
-		if (colIdx >= 0) sheet.getRange(row < HIDDEN_DATA_ROW ? HIDDEN_DATA_ROW : row, colIdx + 1).setValue(JSON.stringify(idsArray));
+		if (colIdx >= 0) {
+			sheet.getRange(row < HIDDEN_DATA_ROW ? HIDDEN_DATA_ROW : row, colIdx + 1).setValue(JSON.stringify(idsArray));
+			_bumpSyncVersionSafe();
+		}
 	} catch (e) {}
 }
 function clientSaveUiPrefs(prefs) {
@@ -2016,8 +2127,9 @@ function clientSaveAudiobook(audioData) {
 		if (existingRow >= HIDDEN_DATA_ROW) {
 			sheet.getRange(existingRow, 1, 1, AUDIOBOOK_HEADERS.length).setValues([row]);
 		} else {
-			sheet.appendRow(row);
+			_appendHiddenSheetRow(sheet, row);
 		}
+		_bumpSyncVersionSafe();
 	} catch (e) { return { error: e.message }; }
 	finally { lock.releaseLock(); }
 }
@@ -2036,6 +2148,7 @@ function clientSaveAudioPosition(audioId, chapterIndex, currentTime, speed, tota
 			row[AUDIOBOOK_HEADERS.indexOf('TotalListeningMins')] = Number(totalListeningMins) || 0;
 		}
 		sheet.getRange(rowIdx, 1, 1, AUDIOBOOK_HEADERS.length).setValues([row]);
+		_bumpSyncVersionSafe();
 	} catch (e) {}
 	finally { lock.releaseLock(); }
 }
@@ -2302,9 +2415,14 @@ function clientClearDemoData() {
 			}
 			_dbLiteInitMyYearSheet(ss, themeName);
 		} catch (myErr) { _log('warn', 'clientClearDemoData myYear rebuild', myErr); }
+		_bumpSyncVersionSafe();
 		return { cleared: true };
 	} catch (e) { return { error: e.message }; }
 	finally { lock.releaseLock(); }
+}
+
+function _bumpSyncVersionSafe() {
+	try { _incrementSyncVersion(); } catch (e) {}
 }
 
 // =====================================================================
@@ -2594,10 +2712,11 @@ function clientRefreshNYTCache() {
 
 function _getLibraryIsbnsForNyt() {
 	var sheet = _ss().getSheetByName(SHEET_LIBRARY);
-	if (!sheet || sheet.getLastRow() < LIBRARY_DATA_ROW) return [];
+	var lastRow = _getLibLastDataRow(sheet);
+	if (!sheet || lastRow < LIBRARY_DATA_ROW) return [];
 	var isbnCol = LIBRARY_HEADERS.indexOf('ISBN');
 	if (isbnCol < 0) return [];
-	var values = sheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL + isbnCol, sheet.getLastRow() - LIBRARY_DATA_ROW + 1, 1).getValues();
+	var values = sheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL + isbnCol, lastRow - LIBRARY_DATA_ROW + 1, 1).getValues();
 	var seen = {}, result = [];
 	for (var i = 0; i < values.length; i++) {
 		var isbn = _normalizeIsbn(values[i][0]);
@@ -2613,10 +2732,11 @@ function clientGetNYTBadgesForLibrary() {
 	if (!raw) return { byBookId: {}, byIsbn: {} };
 	var cache; try { cache = JSON.parse(raw); } catch (e) { return { byBookId: {}, byIsbn: {} }; }
 	var sheet = _ss().getSheetByName(SHEET_LIBRARY);
-	if (!sheet || sheet.getLastRow() < LIBRARY_DATA_ROW) return { byBookId: {}, byIsbn: {} };
+	var lastRow = _getLibLastDataRow(sheet);
+	if (!sheet || lastRow < LIBRARY_DATA_ROW) return { byBookId: {}, byIsbn: {} };
 	var isbnCol = LIBRARY_HEADERS.indexOf('ISBN');
 	var bookIdCol = LIBRARY_HEADERS.indexOf('BookId');
-	var data = sheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL, sheet.getLastRow() - LIBRARY_DATA_ROW + 1, LIBRARY_HEADERS.length).getValues();
+	var data = sheet.getRange(LIBRARY_DATA_ROW, LIBRARY_DATA_COL, lastRow - LIBRARY_DATA_ROW + 1, LIBRARY_HEADERS.length).getValues();
 	var byBookId = {}, byIsbn = {};
 	for (var r = 0; r < data.length; r++) {
 		var isbn = _normalizeIsbn(data[r][isbnCol] || '');
@@ -2679,6 +2799,9 @@ function runInitialNYTWarmup() {
 function clientGetSyncVersion() {
 	return Number(PropertiesService.getScriptProperties().getProperty('SYNC_VERSION') || '0');
 }
+function clientGetSpreadsheetUrl() {
+	try { return _ss().getUrl() || ''; } catch (e) { return ''; }
+}
 function _incrementSyncVersion() {
 	var props = PropertiesService.getScriptProperties();
 	var current = Number(props.getProperty('SYNC_VERSION') || '0');
@@ -2736,13 +2859,43 @@ function resetDemoData() {
 }
 
 function onOpen() {
+	// Always build the menu first so users can interact immediately,
+	// even if one-time initialization takes longer in the background.
+	try {
+		var ui = SpreadsheetApp.getUi();
+		var isDeployed = false;
+		try { isDeployed = !!ScriptApp.getService().getUrl(); } catch(e) {}
+
+		ui.createMenu(_buildJourneyTitle())
+			.addItem(isDeployed ? '📖 Open My App' : '🚀 Set Up My App',
+			         isDeployed ? '_openWebApp'    : '_setupMyApp')
+			.addSeparator()
+			.addItem('🎨 Refresh Styling & Colors', '_reStyleCurrentTheme')
+			.addItem('🗑  Clear All Books & Data',  'clientClearDemoData')
+			.addToUi();
+
+		// Auto-popup the setup wizard on first open if not yet deployed.
+		// Stored on document properties so it only fires once per buyer.
+		try {
+			var docProps = PropertiesService.getDocumentProperties();
+			if (!isDeployed && docProps.getProperty('WELCOMED') !== '1') {
+				docProps.setProperty('WELCOMED', '1');
+				_setupMyApp();
+			}
+		} catch (eWelcome) {}
+	} catch (eMenu) {
+		_log('warn', 'onOpen', 'menu setup: ' + eMenu);
+	}
+
 	// First-open auto-setup: do the buyer setup automatically, but keep the
 	// sheet responsive. Anything expensive gets deferred to a trigger.
 	try {
 		var props = PropertiesService.getScriptProperties();
 		if (props.getProperty('SHEETS_INITIALIZED') !== '1') {
-			// 1. Build sheet tabs, seed demo books, restyle theme.
-			_dbLiteInitializeSheets();
+			// Ensure the data model exists immediately, but defer the expensive
+			// visual rebuild so the menu appears on the first open.
+			_dbLiteEnsureWebAppDataReady();
+			try { _queueDeferredInitialSetup(); } catch (eQueue) { _log('warn', 'onOpen', 'deferred setup: ' + eQueue); }
 
 			// 2. Install the live sheet→app sync trigger.
 			try {
@@ -2769,39 +2922,12 @@ function onOpen() {
 					_scheduleInitialNYTWarmup();
 				}
 			} catch (eNyt) { _log('warn', 'onOpen', 'nyt setup: ' + eNyt); }
-
-			props.setProperty('SHEETS_INITIALIZED', '1');
 		}
 	} catch (e) { _log('error', 'onOpen', e); }
-
-	try {
-		var ui = SpreadsheetApp.getUi();
-		var isDeployed = false;
-		try { isDeployed = !!ScriptApp.getService().getUrl(); } catch(e) {}
-
-		ui.createMenu(_buildJourneyTitle())
-			.addItem(isDeployed ? '📖 Open My App' : '🚀 Set Up My App',
-			         isDeployed ? '_openWebApp'    : '_setupMyApp')
-			.addSeparator()
-			.addItem('🎨 Refresh Styling & Colors', '_reStyleCurrentTheme')
-			.addItem('🗑  Clear All Books & Data',  'clientClearDemoData')
-			.addToUi();
-
-		// Auto-popup the setup wizard on first open if not yet deployed.
-		// Stored on document properties so it only fires once per buyer.
-		try {
-			var docProps = PropertiesService.getDocumentProperties();
-			if (!isDeployed && docProps.getProperty('WELCOMED') !== '1') {
-				docProps.setProperty('WELCOMED', '1');
-				_setupMyApp();
-			}
-		} catch (eWelcome) {}
-	} catch (e) {}
 }
 
 function _openWebApp() {
-	var url = '';
-	try { url = ScriptApp.getService().getUrl() || ''; } catch(e) {}
+	var url = _getWebAppUrl();
 	if (!url) { _setupMyApp(); return; }
 	var html = HtmlService.createHtmlOutput(
 		'<div style="font-family:\'Google Sans\',Arial,sans-serif;padding:20px;text-align:center;">'
@@ -2819,8 +2945,7 @@ function _openWebApp() {
 }
 
 function _setupMyApp() {
-	var existingUrl = '';
-	try { existingUrl = ScriptApp.getService().getUrl() || ''; } catch(e) {}
+	var existingUrl = _getWebAppUrl();
 	if (existingUrl) { _openWebApp(); return; }
 	var scriptEditorUrl = _getScriptEditorUrl();
 
@@ -2845,6 +2970,11 @@ function _setupMyApp() {
 		+ '.btn{width:100%;padding:12px;background:#2563eb;color:#fff;border:none;border-radius:10px;'
 		+ 'font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:12px}'
 		+ '.btn:disabled{opacity:0.5;cursor:default}'
+		+ '.input{width:100%;margin-top:10px;padding:10px 11px;border:1px solid #d1d5db;border-radius:10px;'
+		+ 'font-size:11px;outline:none;color:#1f2937}'
+		+ '.input:focus{border-color:#60a5fa;box-shadow:0 0 0 3px rgba(96,165,250,.18)}'
+		+ '.btn2{width:100%;padding:10px;background:#fff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:10px;'
+		+ 'font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:8px}'
 		+ '.sub{margin-top:6px;color:#6b7280;font-size:10.5px;text-align:center;line-height:1.4}'
 		+ '.ok{display:none;margin-top:12px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;'
 		+ 'border-radius:8px;text-align:center}'
@@ -2874,6 +3004,8 @@ function _setupMyApp() {
 		+ '<div class="st">Finish setup, then come back here</div>'
 		+ '<div class="sb">Click <b>Deploy</b>, approve Google once, then return to this tab and press the button below.</div></div></div>'
 		+ '<button class="btn" id="doneBtn" onclick="checkUrl()">Find My App Link</button>'
+		+ '<input class="input" id="manualUrl" type="text" placeholder="If needed, paste your app link here" />'
+		+ '<button class="btn2" id="saveBtn" onclick="saveManualUrl()">Use Pasted Link</button>'
 		+ '<div class="sub">Your NYT badges may take about a minute to appear the first time while the bestseller cache warms up.</div>'
 		+ '<div id="msg"></div>'
 		+ '<div class="ok" id="ok">'
@@ -2884,23 +3016,44 @@ function _setupMyApp() {
 		+ '<script>'
 		+ 'function checkUrl(){'
 		+ 'var btn=document.getElementById("doneBtn");'
+		+ 'var saveBtn=document.getElementById("saveBtn");'
 		+ 'var msg=document.getElementById("msg");'
-		+ 'btn.disabled=true;msg.textContent="Checking\u2026";'
+		+ 'btn.disabled=true;saveBtn.disabled=true;msg.textContent="Checking\u2026";'
 		+ 'google.script.run'
 		+ '.withSuccessHandler(function(u){'
 		+ 'if(u){'
 		+ 'document.getElementById("appLink").href=u;'
+		+ 'var manual=document.getElementById("manualUrl");if(manual)manual.value=u;'
 		+ 'document.getElementById("ok").style.display="block";'
 		+ 'try{window.open(u,"_blank");}catch(e){}'
 		+ 'btn.style.display="none";msg.textContent="";'
 		+ '}else{'
 		+ 'msg.textContent="Not seeing your app yet. Finish the setup step in the Google tab, then try again.";'
-		+ 'btn.disabled=false;'
+		+ 'btn.disabled=false;saveBtn.disabled=false;'
 		+ '}})'
 		+ '.withFailureHandler(function(){'
 		+ 'msg.textContent="Could not find your app link yet. Try again in a few seconds.";'
-		+ 'btn.disabled=false;})'
+		+ 'btn.disabled=false;saveBtn.disabled=false;})'
 		+ '._checkDeployment();}'
+		+ 'function saveManualUrl(){'
+		+ 'var btn=document.getElementById("doneBtn");'
+		+ 'var saveBtn=document.getElementById("saveBtn");'
+		+ 'var msg=document.getElementById("msg");'
+		+ 'var val=(document.getElementById("manualUrl").value||"").trim();'
+		+ 'if(!val){msg.textContent="Paste your app link first.";return;}'
+		+ 'btn.disabled=true;saveBtn.disabled=true;msg.textContent="Saving link\u2026";'
+		+ 'google.script.run'
+		+ '.withSuccessHandler(function(saved){'
+		+ 'if(saved){'
+		+ 'document.getElementById("appLink").href=saved;'
+		+ 'document.getElementById("ok").style.display="block";'
+		+ 'msg.textContent="";'
+		+ 'try{window.open(saved,"_blank");}catch(e){}'
+		+ '}else{msg.textContent="That link does not look like a valid app link.";}'
+		+ 'btn.disabled=false;saveBtn.disabled=false;'
+		+ '})'
+		+ '.withFailureHandler(function(){msg.textContent="Could not save that link. Try again.";btn.disabled=false;saveBtn.disabled=false;})'
+		+ '._saveManualWebAppUrl(val);}'
 		+ '<\/script>'
 	).setWidth(440).setHeight(560);
 	SpreadsheetApp.getUi().showModalDialog(html, 'Set Up My Reading App');
@@ -2916,8 +3069,32 @@ function _getScriptEditorUrl() {
 	}
 }
 
+function _isValidWebAppUrl(url) {
+	var val = String(url || '').trim();
+	return /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/(exec|dev)(\?.*)?$/.test(val);
+}
+
+function _getWebAppUrl() {
+	try {
+		var saved = PropertiesService.getDocumentProperties().getProperty('WEB_APP_URL') || '';
+		if (_isValidWebAppUrl(saved)) return saved;
+	} catch (eSaved) {}
+	try {
+		var auto = ScriptApp.getService().getUrl() || '';
+		if (_isValidWebAppUrl(auto)) return auto;
+	} catch (eAuto) {}
+	return '';
+}
+
+function _saveManualWebAppUrl(url) {
+	var val = String(url || '').trim();
+	if (!_isValidWebAppUrl(val)) return '';
+	try { PropertiesService.getDocumentProperties().setProperty('WEB_APP_URL', val); } catch (e) { return ''; }
+	return val;
+}
+
 function _checkDeployment() {
-	try { return ScriptApp.getService().getUrl() || ''; } catch(e) { return ''; }
+	return _getWebAppUrl();
 }
 
 function _reStyleCurrentTheme() {

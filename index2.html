@@ -3904,18 +3904,26 @@
     .hydration-gate.hydration-done {
       opacity:0; visibility:hidden; pointer-events:none;
     }
-    .hydration-gate-inner { text-align:center; }
+    .hydration-gate-inner {
+      text-align:center;
+      background:var(--card-bg, #FFFFFF);
+      border:1.5px solid var(--card-border, #F9A8D4);
+      border-radius:18px;
+      padding:22px 28px;
+      box-shadow:0 14px 40px rgba(15,23,42,0.18);
+    }
     .hydration-spinner {
       width:36px; height:36px; margin:0 auto 14px;
-      border:3.5px solid var(--card-border, #F9A8D4);
-      border-top-color:var(--accent, #F472B6);
+      border:3.5px solid color-mix(in srgb, var(--primary-1, #F472B6) 22%, transparent);
+      border-top-color:var(--primary-1, #F472B6);
       border-radius:50%;
       animation:hydrationSpin 0.8s linear infinite;
     }
     @keyframes hydrationSpin { to { transform:rotate(360deg); } }
     .hydration-label {
       font-family:'Nunito',sans-serif; font-size:0.95rem;
-      color:var(--text-2, #6B7280); font-weight:600; margin:0;
+      color:var(--text-1, #111827); font-weight:700; margin:0;
+      letter-spacing:0.01em;
     }
 
     /* ===== WELCOME OVERLAY ===== */
@@ -5964,7 +5972,8 @@
         </div>
       </div>
       <div id="headerCoversToggleSlot"></div>
-      <button class="sync-btn" id="syncFromSheetBtn" type="button" title="Sync from Google Sheet" style="display:none;background:none;border:1.5px solid var(--card-border);border-radius:8px;padding:5px 10px;cursor:pointer;color:var(--text-2);font-size:0.82rem;transition:all 0.2s;white-space:nowrap;" onclick="return false;"><i data-lucide="refresh-cw" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;"></i>Sync</button>
+      <button class="sync-btn" id="syncFromSheetBtn" type="button" title="Sync from Google Sheet" style="display:none;background:color-mix(in srgb, var(--primary-1) 12%, transparent);border:1.5px solid var(--primary-1);border-radius:8px;padding:5px 10px;cursor:pointer;color:var(--primary-1);font-weight:700;font-size:0.82rem;transition:all 0.2s;white-space:nowrap;" onclick="return false;"><i data-lucide="refresh-cw" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;"></i>Sync</button>
+      <button class="open-sheet-btn" id="openSheetBtn" type="button" title="Open Google Sheet in a new tab" style="display:none;background:transparent;border:1.5px solid var(--primary-1);border-radius:8px;padding:5px 10px;cursor:pointer;color:var(--primary-1);font-weight:700;font-size:0.82rem;transition:all 0.2s;white-space:nowrap;margin-left:6px;"><i data-lucide="external-link" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;"></i>Sheet</button>
       <div class="stats-row" id="headerStats"></div>
     </div>
   </header>
@@ -7946,12 +7955,10 @@
         });
       }
 
-      // --- Library ---
+      // --- Library --- (always replace from server, even when empty, so sheet clears propagate)
       var mappedBooks = initialData.library.map(mapBackendBook);
-      if (mappedBooks.length) {
-        allBooks.length = 0;
-        mappedBooks.forEach(function(b) { allBooks.push(b); });
-      }
+      allBooks.length = 0;
+      mappedBooks.forEach(function(b) { allBooks.push(b); });
 
       // Map book shelves from server shelf IDs to local shelf IDs
       allBooks.forEach(function(book) {
@@ -18425,7 +18432,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
 
     bootstrapApp();
 
-    // ── Sync polling: detect sheet edits every 60s via version counter ────
+    // ── Sync polling: detect sheet edits every 10s via version counter ────
     (function initSyncPoll() {
       if (!hasServerRuntime()) return;
       var _lastSyncVersion = -1;
@@ -18444,7 +18451,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             }
           })
           .catch(function() { /* silent — poll will retry next cycle */ });
-      }, 60000);
+      }, 10000);
     })();
 
     // ── Sync button click handler ──────────────────────────────────────────
@@ -18459,6 +18466,35 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
           .then(function() { showToast('✅ Synced from Google Sheet', 'success'); })
           .catch(function() { showToast('⚠️ Sync failed — try again', 'error'); })
           .then(function() { btn.disabled = false; btn.style.opacity = '1'; });
+      });
+    })();
+
+    // ── Open Sheet button: fetch live URL from server, open in new tab ────
+    (function initOpenSheetButton() {
+      var btn = document.getElementById('openSheetBtn');
+      if (!btn) return;
+      if (!hasServerRuntime()) { btn.style.display = 'none'; return; }
+      btn.style.display = '';
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        btn.disabled = true;
+        var origOpacity = btn.style.opacity;
+        btn.style.opacity = '0.5';
+        serverRun('clientGetSpreadsheetUrl')
+          .then(function(url) {
+            if (url) {
+              var win = window.open(url, '_blank', 'noopener');
+              if (!win) {
+                var a = document.createElement('a');
+                a.href = url; a.target = '_blank'; a.rel = 'noopener';
+                document.body.appendChild(a); a.click(); a.remove();
+              }
+            } else {
+              showToast('⚠️ Could not get the sheet URL', 'error');
+            }
+          })
+          .catch(function() { showToast('⚠️ Could not open the sheet', 'error'); })
+          .then(function() { btn.disabled = false; btn.style.opacity = origOpacity || '1'; });
       });
     })();
 
