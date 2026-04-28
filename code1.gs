@@ -2870,6 +2870,7 @@ function onOpen() {
 			.addItem(isDeployed ? '📖 Open My App' : '🚀 Set Up My App',
 			         isDeployed ? '_openWebApp'    : '_setupMyApp')
 			.addSeparator()
+			.addItem('🔗 Reset App URL', '_resetWebAppUrl')
 			.addItem('🎨 Refresh Styling & Colors', '_reStyleCurrentTheme')
 			.addItem('🗑  Clear All Books & Data',  'clientClearDemoData')
 			.addToUi();
@@ -2929,19 +2930,52 @@ function onOpen() {
 function _openWebApp() {
 	var url = _getWebAppUrl();
 	if (!url) { _setupMyApp(); return; }
+	var safeUrl = String(url).replace(/[<>"']/g, '');
+	// Anchor target=_blank inside an HtmlService modal dialog is rewritten
+	// through Google's URL gateway, which can show a "Sorry, unable to open
+	// the file" Drive error for /macros/s/.../exec URLs. Using window.open
+	// from a button click sidesteps that gateway entirely.
 	var html = HtmlService.createHtmlOutput(
 		'<div style="font-family:\'Google Sans\',Arial,sans-serif;padding:20px;text-align:center;">'
 		+ '<div style="font-size:32px;margin-bottom:10px;">📖</div>'
 		+ '<p style="margin:0 0 5px;font-size:13px;font-weight:700;color:#1f2937;">Your Reading App</p>'
-		+ '<p style="margin:0 0 16px;font-size:11px;color:#9ca3af;word-break:break-all;">' + url + '</p>'
-		+ '<a href="' + url + '" target="_blank" style="text-decoration:none;">'
-		+ '<button style="background:#2563eb;color:#fff;border:none;border-radius:8px;'
+		+ '<p style="margin:0 0 14px;font-size:11px;color:#6b7280;word-break:break-all;">'
+		+ '<a id="appUrl" href="' + safeUrl + '" target="_blank" rel="noopener" '
+		+ 'style="color:#2563eb;text-decoration:underline;">' + safeUrl + '</a></p>'
+		+ '<button id="openBtn" type="button" '
+		+ 'style="background:#2563eb;color:#fff;border:none;border-radius:8px;'
 		+ 'padding:11px 28px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">'
-		+ 'Open My App \u2197</button></a>'
-		+ '<p style="margin:12px 0 0;font-size:11px;color:#9ca3af;">Bookmark this link \u2014 it\'s yours forever</p>'
+		+ 'Open My App \u2197</button>'
+		+ '<button id="copyBtn" type="button" '
+		+ 'style="margin-left:8px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;'
+		+ 'padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">'
+		+ 'Copy link</button>'
+		+ '<p id="hint" style="margin:12px 0 0;font-size:11px;color:#9ca3af;">Bookmark this link \u2014 it\'s yours forever</p>'
+		+ '<script>'
+		+ 'var _u=' + JSON.stringify(safeUrl) + ';'
+		+ 'document.getElementById("openBtn").addEventListener("click",function(){'
+		+ 'var w=window.open(_u,"_blank","noopener");'
+		+ 'if(!w){document.getElementById("hint").textContent="Pop-up blocked \u2014 click the link above to open.";}'
+		+ '});'
+		+ 'document.getElementById("copyBtn").addEventListener("click",function(){'
+		+ 'try{navigator.clipboard.writeText(_u).then(function(){'
+		+ 'document.getElementById("hint").textContent="Copied! Paste it into a new tab.";});'
+		+ '}catch(e){var s=document.createElement("textarea");s.value=_u;document.body.appendChild(s);s.select();'
+		+ 'document.execCommand("copy");document.body.removeChild(s);'
+		+ 'document.getElementById("hint").textContent="Copied!";}'
+		+ '});'
+		+ '<\/script>'
 		+ '</div>'
-	).setWidth(360).setHeight(190);
+	).setWidth(440).setHeight(240);
 	SpreadsheetApp.getUi().showModalDialog(html, 'My Reading Journey');
+}
+
+function _resetWebAppUrl() {
+	var ui = SpreadsheetApp.getUi();
+	try { PropertiesService.getDocumentProperties().deleteProperty('WEB_APP_URL'); } catch (e) {}
+	try { PropertiesService.getDocumentProperties().deleteProperty('WELCOMED'); } catch (e2) {}
+	ui.alert('App URL cleared. Use "Set Up My App" to enter a fresh deployment URL.');
+	_setupMyApp();
 }
 
 function _setupMyApp() {
