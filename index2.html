@@ -7140,13 +7140,7 @@
           return;
         }
         var runner = google.script.run
-          .withSuccessHandler(function(result) {
-            if (result && typeof result === 'object' && result.error) {
-              reject(new Error(result.error));
-            } else {
-              resolve(result);
-            }
-          })
+          .withSuccessHandler(resolve)
           .withFailureHandler(function(err) {
             reject(err instanceof Error ? err : new Error(String(err)));
           });
@@ -7168,7 +7162,7 @@
           if (!entry) return { available: false };
           var preview = entry.preview || 'noview';
           return {
-            available: preview === 'full',
+            available: preview === 'full' || preview === 'limited',
             previewLevel: preview,
             readUrl: entry.read_url || entry.info_url || '',
             thumbnail: entry.thumbnail_url || ''
@@ -9242,42 +9236,24 @@
       if (!query || query.length < 2) { dropdown.classList.remove('open'); return; }
       clearTimeout(_audioAcTimer);
       _audioAcTimer = setTimeout(function() {
-        // LibriVox does not send CORS headers, so we must always go through
-        // the Apps Script proxy when deployed; fall back to direct fetch only
-        // for local/standalone preview where serverRun is unavailable.
-        var lookup;
-        if (hasServerRuntime()) {
-          lookup = serverRun('clientSearchAudiobook', query).then(function(rows) {
-            return (rows || []).slice(0, 6).map(function(r) {
-              return { title: r.title || '', url_image: r.coverUrl || '', authorName: r.author || 'Unknown' };
-            });
-          });
-        } else {
-          lookup = fetch('https://librivox.org/api/feed/audiobooks?title=' + encodeURIComponent(query) + '&format=json&limit=6')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-              return ((data && data.books) || []).map(function(d) {
-                var authorName = 'Unknown';
-                if (d.authors && d.authors.length > 0) {
-                  var a = d.authors[0];
-                  authorName = ((a.first_name || '') + ' ' + (a.last_name || '')).trim() || 'Unknown';
-                }
-                return { title: d.title || '', url_image: d.url_image || '', authorName: authorName };
-              });
-            });
-        }
-        lookup
-          .then(function(items) {
-            if (!items || !items.length) { dropdown.classList.remove('open'); return; }
-            dropdown.innerHTML = items.map(function(d) {
+        fetch('https://librivox.org/api/feed/audiobooks?title=' + encodeURIComponent(query) + '&format=json&limit=6')
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (!data.books || !data.books.length) { dropdown.classList.remove('open'); return; }
+            dropdown.innerHTML = data.books.map(function(d) {
               var coverHtml = d.url_image
                 ? '<div class="ab-sug-cov"><img src="' + esc(d.url_image) + '" onerror="this.style.display=\'none\'" /></div>'
                 : '<div class="ab-sug-cov">🎧</div>';
+              var authorName = 'Unknown';
+              if (d.authors && d.authors.length > 0) {
+                var a = d.authors[0];
+                authorName = ((a.first_name || '') + ' ' + (a.last_name || '')).trim() || 'Unknown';
+              }
               return '<div class="ab-sug-item" data-ac-audio-title="' + esc(d.title) + '">' +
                 coverHtml +
                 '<div class="ab-sug-inf">' +
                   '<div class="ab-sug-ttl">' + esc(cleanAudioTitle(d.title)) + '</div>' +
-                  '<div class="ab-sug-sub">' + esc(d.authorName) + ' &middot; Free audio</div>' +
+                  '<div class="ab-sug-sub">' + esc(authorName) + ' &middot; Free audio</div>' +
                 '</div>' +
               '</div>';
             }).join('');
@@ -9755,56 +9731,59 @@
     }
 
     state._nytFeedEnrichmentStarted = state._nytFeedEnrichmentStarted || {};
+    function buildNytSearchQuery(b) {
+      var isbn = b ? (b.isbn13 || b.isbn10 || b.isbn || '') : '';
+      var prefix = 'isbn:';
+      if (isbn) { return prefix + encodeURIComponent(isbn); }
+      var t = b && b.title ? String(b.title) : '';
+      var a = b && b.author ? String(b.author) : '';
+      var q = t && a ? t + ' ' + a : t || a;
+      return encodeURIComponent(q.trim());
+    }
     function enrichNytFeedCovers(lists) {
-      if (!lists || !lists.length) return;
+      if (!lists || !lists.length) { return; }
+      var olBase = 'https://openlibrary.org/search.json?q=';
+      var olSuffix = '&limit=1&fields=key,cover_i';
       lists.forEach(function(list) {
-        if (!Array.isArray(list.books)) return;
+        if (!Array.isArray(list.books)) { return; }
         list.books.slice(0, 4).forEach(function(book) {
-          if (book.coverId || (book.bookImage && isValidCoverUrl(book.bookImage)) || book._enriched) return;
+          if (book.coverId || (book.bookImage && isValidCoverUrl(book.bookImage)) || book._enriched) { return; }
           var cacheKey = book.isbn13 || book.isbn10 || book.isbn || book.title || '';
-          if (!cacheKey || state._nytFeedEnrichmentStarted[cacheKey]) return;
+          if (!cacheKey || state._nytFeedEnrichmentStarted[cacheKey]) { return; }
           state._nytFeedEnrichmentStarted[cacheKey] = true;
-
-          var query = (book.isbn13 || book.isbn10 || book.isbn)
-            ? 'isbn:' + encodeURIComponent(book.isbn13 || book.isbn10 || book.isbn)
-            : encodeURIComponent((book.title || '') + ' ' + (book.author || ''));
-          
-          fetch('https://openlibrary.org/search.json?q=' + query + '&limit=1&fields=key,cover_i')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-              var doc = data.docs && data.docs[0];
-              if (doc && doc.cover_i) {
-                book.coverId = doc.cover_i;
-                book._enriched = true;
-                if (state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
-              } else if (!doc && (book.isbn13 || book.isbn10 || book.isbn)) {
-                var sq = encodeURIComponent((book.title || '') + ' ' + (book.author || ''));
-                fetch('https://openlibrary.org/search.json?q=' + sq + '&limit=1&fields=key,cover_i')
-                  .then(function(r2) { return r2.json(); })
-                  .then(function(d2) {
-                    var doc2 = d2.docs && d2.docs[0];
-                    if (doc2 && doc2.cover_i) {
-                      book.coverId = doc2.cover_i;
-                      book._enriched = true;
-                      if (state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
-                    } else {
-                      fetchWikipediaCover(book.title, function(url) {
-                        if (url) { book.bookImage = url; }
-                        book._enriched = true;
-                        if (url && state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
-                      });
-                    }
-                  }).catch(function() { state._nytFeedEnrichmentStarted[cacheKey] = false; });
-              } else {
-                fetchWikipediaCover(book.title, function(url) {
-                  if (url) { book.bookImage = url; }
+          var query = buildNytSearchQuery(book);
+          var url1 = olBase + query + olSuffix;
+          fetch(url1).then(function(r) { return r.json(); }).then(function(data) {
+            var doc = data.docs && data.docs[0];
+            if (doc && doc.cover_i) {
+              book.coverId = doc.cover_i;
+              book._enriched = true;
+              if (state.activeTab === 'insights') { setTimeout(renderNytFeedPanel, 100); }
+            } else if (!doc && (book.isbn13 || book.isbn10 || book.isbn)) {
+              var sq = buildNytSearchQuery({ title: book.title, author: book.author });
+              var url2 = olBase + sq + olSuffix;
+              fetch(url2).then(function(r2) { return r2.json(); }).then(function(d2) {
+                var doc2 = d2.docs && d2.docs[0];
+                if (doc2 && doc2.cover_i) {
+                  book.coverId = doc2.cover_i;
                   book._enriched = true;
-                  if (url && state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
-                });
-              }
-            }).catch(function() {
-              state._nytFeedEnrichmentStarted[cacheKey] = false;
-            });
+                  if (state.activeTab === 'insights') { setTimeout(renderNytFeedPanel, 100); }
+                } else {
+                  fetchWikipediaCover(book.title, function(url) {
+                    if (url) { book.bookImage = url; }
+                    book._enriched = true;
+                    if (url && state.activeTab === 'insights') { setTimeout(renderNytFeedPanel, 100); }
+                  });
+                }
+              }).catch(function() { state._nytFeedEnrichmentStarted[cacheKey] = false; });
+            } else {
+              fetchWikipediaCover(book.title, function(url) {
+                if (url) { book.bookImage = url; }
+                book._enriched = true;
+                if (url && state.activeTab === 'insights') { setTimeout(renderNytFeedPanel, 100); }
+              });
+            }
+          }).catch(function() { state._nytFeedEnrichmentStarted[cacheKey] = false; });
         });
       });
     }

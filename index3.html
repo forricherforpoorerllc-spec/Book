@@ -6586,6 +6586,7 @@
     </div>
   </div>
 
+
   <!-- FAB Menu -->
   <div id="fabMenu" class="fab-menu hidden"></div>
   <button class="floating-add" id="addBookBtn" title="Add Book"><i data-lucide="plus"></i><span class="fab-label">Add Book</span></button>
@@ -7151,6 +7152,28 @@
             reject(err instanceof Error ? err : new Error(String(err)));
           });
         runner[method].apply(runner, args);
+      });
+    }
+
+    function withTimeout(promise, ms, label) {
+      return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+          if (done) return;
+          done = true;
+          reject(new Error((label || 'Request') + ' timed out'));
+        }, ms);
+        promise.then(function(result) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          resolve(result);
+        }).catch(function(err) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          reject(err);
+        });
       });
     }
 
@@ -8084,11 +8107,31 @@
       serverRun('clientUpdateBook', book._serverBookId, { Shelves: toServerBookPayload(book).Shelves }).catch(function() {});
     }
 
+    function applyNytSnapshot(snapshot) {
+      if (!snapshot || typeof snapshot !== 'object') return;
+      if (snapshot.nytBadges && typeof snapshot.nytBadges === 'object') {
+        state.nytBadges = snapshot.nytBadges;
+      }
+      if (snapshot.nytBadgesByIsbn && typeof snapshot.nytBadgesByIsbn === 'object') {
+        state.nytBadgesByIsbn = snapshot.nytBadgesByIsbn;
+      }
+      if (Array.isArray(snapshot.nytFeed)) {
+        state.nytFeed = snapshot.nytFeed;
+      }
+      state.nytCacheDate = String(snapshot.nytCacheDate || state.nytCacheDate || '');
+    }
+
     function refreshFromServer() {
       if (!hasServerRuntime()) return Promise.resolve();
-      return serverRun('clientGetInitialData')
-        .then(function(data) {
+      return Promise.all([
+        serverRun('clientGetInitialData'),
+        serverRun('clientGetNytSnapshot').catch(function() { return null; })
+      ])
+        .then(function(results) {
+          var data = results[0];
+          var nytSnapshot = results[1];
           hydrateFromBackend(data);
+          applyNytSnapshot(nytSnapshot);
           fullRender();
         })
         .catch(function(err) {
@@ -9755,6 +9798,15 @@
     }
 
     state._nytFeedEnrichmentStarted = state._nytFeedEnrichmentStarted || {};
+    function buildNytSearchQuery(book) {
+      var isbnVal = (book && (book.isbn13 || book.isbn10 || book.isbn)) || '';
+      if (isbnVal) return 'isbn:' + encodeURIComponent(isbnVal);
+      var parts = [];
+      if (book && book.title) parts.push(String(book.title));
+      if (book && book.author) parts.push(String(book.author));
+      return encodeURIComponent(parts.join(' ').trim());
+    }
+
     function enrichNytFeedCovers(lists) {
       if (!lists || !lists.length) return;
       lists.forEach(function(list) {
@@ -9765,10 +9817,7 @@
           if (!cacheKey || state._nytFeedEnrichmentStarted[cacheKey]) return;
           state._nytFeedEnrichmentStarted[cacheKey] = true;
 
-          var query = (book.isbn13 || book.isbn10 || book.isbn)
-            ? 'isbn:' + encodeURIComponent(book.isbn13 || book.isbn10 || book.isbn)
-            : encodeURIComponent((book.title || '') + ' ' + (book.author || ''));
-          
+          var query = buildNytSearchQuery(book);
           fetch('https://openlibrary.org/search.json?q=' + query + '&limit=1&fields=key,cover_i')
             .then(function(r) { return r.json(); })
             .then(function(data) {
@@ -9778,7 +9827,7 @@
                 book._enriched = true;
                 if (state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
               } else if (!doc && (book.isbn13 || book.isbn10 || book.isbn)) {
-                var sq = encodeURIComponent((book.title || '') + ' ' + (book.author || ''));
+                var sq = buildNytSearchQuery({ title: book.title, author: book.author });
                 fetch('https://openlibrary.org/search.json?q=' + sq + '&limit=1&fields=key,cover_i')
                   .then(function(r2) { return r2.json(); })
                   .then(function(d2) {
@@ -18215,52 +18264,85 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       root.style.setProperty('--mobile-tabbar-offset', tabBarVisible ? ((tabBar.offsetHeight || 72) + 'px') : '0px');
     }
 
+    function dismissHydrationGate() {
+      var gate = document.getElementById('hydrationGate');
+      if (gate) gate.classList.add('hydration-done');
+    }
+
     function bootstrapApp() {
-      _audioEl = document.getElementById('audioPlayer');
-      loadData();
-      bindEvents();
-      fullRender();
-      syncMobileLayoutMetrics();
-      restoreAudiobookPlayback(state.currentAudioId);
+      // Hard fallback: never leave the hydration gate spinning forever.
+      var hydrationFailsafe = setTimeout(function() {
+        dismissHydrationGate();
+        console.warn('Hydration gate fallback activated');
+      }, 45000);
 
-      // Track listening time every 30s while audio is playing
-      setInterval(function() {
-        if (_audioEl && !_audioEl.paused && state.currentAudioId) {
-          state.totalListeningMins = (state.totalListeningMins || 0) + 0.5;
-          saveAudioPos();
-          saveData();
+      try {
+        _audioEl = document.getElementById('audioPlayer');
+        loadData();
+        bindEvents();
+        fullRender();
+        syncMobileLayoutMetrics();
+        restoreAudiobookPlayback(state.currentAudioId);
+
+        // Track listening time every 30s while audio is playing
+        setInterval(function() {
+          if (_audioEl && !_audioEl.paused && state.currentAudioId) {
+            state.totalListeningMins = (state.totalListeningMins || 0) + 0.5;
+            saveAudioPos();
+            saveData();
+          }
+        }, 30000);
+
+        if (!hasServerRuntime()) {
+          // No backend — hide gate immediately
+          clearTimeout(hydrationFailsafe);
+          dismissHydrationGate();
+          return;
         }
-      }, 30000);
 
-      if (!hasServerRuntime()) {
-        // No backend — hide gate immediately
-        var gate = document.getElementById('hydrationGate');
-        if (gate) gate.classList.add('hydration-done');
-        return;
+        // Show loading gate while fetching server data
+        var hydrationGate = document.getElementById('hydrationGate');
+        if (hydrationGate) hydrationGate.classList.remove('hydration-done');
+
+        withTimeout(serverRun('clientGetInitialData'), 25000, 'Initial sync')
+          .then(function(data) {
+            hydrateFromBackend(data);
+            clearTimeout(hydrationFailsafe);
+            dismissHydrationGate();
+            requestAnimationFrame(function() {
+              fullRender();
+            });
+            // Load NYT payload after core hydration so initial sync stays fast.
+            serverRun('clientGetNytSnapshot')
+              .then(function(snapshot) {
+                applyNytSnapshot(snapshot);
+                fullRender();
+              })
+              .catch(function() {});
+            // Show sync button now that backend is confirmed
+            var syncBtn = document.getElementById('syncFromSheetBtn');
+            if (syncBtn) syncBtn.style.display = '';
+            restoreAudiobookPlayback(state.currentAudioId).catch(function() {});
+          })
+          .catch(function(err) {
+            console.warn('Backend unavailable; continuing with mock/local data:', err);
+            clearTimeout(hydrationFailsafe);
+            dismissHydrationGate();
+            var errMsg = String((err && err.message) || err || '');
+            var authLikely = /authorize|authori[sz]ation|permission|oauth|timed out/i.test(errMsg);
+            showToast(
+              authLikely
+                ? '⚠️ Google authorization is required. Open Apps Script, run any function once, approve access, then reload.'
+                : '⚠️ Could not connect to your Google Sheet. Showing local data only.',
+              'error'
+            );
+          })
+          .then(function() {});
+      } catch (err) {
+        clearTimeout(hydrationFailsafe);
+        console.error('Bootstrap failed before hydration completed:', err);
+        dismissHydrationGate();
       }
-
-      // Show loading gate while fetching server data
-      var hydrationGate = document.getElementById('hydrationGate');
-      if (hydrationGate) hydrationGate.classList.remove('hydration-done');
-
-      serverRun('clientGetInitialData')
-        .then(function(data) {
-          hydrateFromBackend(data);
-          fullRender();
-          // Show sync button now that backend is confirmed
-          var syncBtn = document.getElementById('syncFromSheetBtn');
-          if (syncBtn) syncBtn.style.display = '';
-          return restoreAudiobookPlayback(state.currentAudioId);
-        })
-        .catch(function(err) {
-          console.warn('Backend unavailable; continuing with mock/local data:', err);
-          showToast('⚠️ Could not connect to your Google Sheet. Showing local data only.', 'error');
-        })
-        .then(function() {
-          // Always dismiss the gate — success or failure
-          var gate = document.getElementById('hydrationGate');
-          if (gate) gate.classList.add('hydration-done');
-        });
     }
 
     bootstrapApp();

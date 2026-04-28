@@ -6586,11 +6586,12 @@
     </div>
   </div>
 
+
   <!-- FAB Menu -->
   <div id="fabMenu" class="fab-menu hidden"></div>
   <button class="floating-add" id="addBookBtn" title="Add Book"><i data-lucide="plus"></i><span class="fab-label">Add Book</span></button>
 
-  <script src="https://unpkg.com/lucide@0.460.0"></script>
+  <script src="https://unpkg.com/lucide@0.460.0" defer onload="if(window.lucide){window.lucide.createIcons();}" onerror="window._lucideUnavailable=true"></script>
   <script>
     const themes = {
       romantic: {
@@ -7151,6 +7152,28 @@
             reject(err instanceof Error ? err : new Error(String(err)));
           });
         runner[method].apply(runner, args);
+      });
+    }
+
+    function withTimeout(promise, ms, label) {
+      return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+          if (done) return;
+          done = true;
+          reject(new Error((label || 'Request') + ' timed out'));
+        }, ms);
+        promise.then(function(result) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          resolve(result);
+        }).catch(function(err) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          reject(err);
+        });
       });
     }
 
@@ -7918,6 +7941,10 @@
       } else {
         state.readingOrder = state.currentlyReading.map(function(b) { return b.id; });
       }
+      var _knownBookIds = allBooks.map(function(b) { return String(b.id); });
+      state.readingOrder = state.readingOrder.map(function(id) { return String(id); }).filter(function(id) {
+        return _knownBookIds.indexOf(id) !== -1;
+      });
 
       // --- Challenges ---
       if (Array.isArray(initialData.goals) && initialData.goals.length) {
@@ -7950,7 +7977,9 @@
 
       // --- Recently read IDs ---
       if (Array.isArray(initialData.recentIds)) {
-        state.recentlyReadIds = initialData.recentIds;
+        state.recentlyReadIds = initialData.recentIds.map(function(id) { return String(id); }).filter(function(id) {
+          return _knownBookIds.indexOf(id) !== -1;
+        });
       }
 
       // --- Sort & view mode ---
@@ -8098,9 +8127,43 @@
       };
     }
 
+    function _toServerBookId(id) {
+      var raw = String(id || '');
+      if (!raw) return '';
+      var byLocal = allBooks.find(function(b) { return String(b.id || '') === raw; });
+      if (byLocal) return String(byLocal._serverBookId || '');
+      var byServer = allBooks.find(function(b) { return String(b._serverBookId || '') === raw; });
+      if (byServer) return String(byServer._serverBookId || '');
+      return '';
+    }
+
+    function _normalizeServerBookIdList(ids) {
+      var source = Array.isArray(ids) ? ids : [];
+      var seen = {};
+      var out = [];
+      source.forEach(function(id) {
+        var serverId = _toServerBookId(id);
+        if (!serverId || seen[serverId]) return;
+        seen[serverId] = true;
+        out.push(serverId);
+      });
+      return out;
+    }
+
     function syncReadingOrderToServer(orderOverride) {
       if (!hasServerRuntime()) return;
-      serverRun('clientSaveReadingOrder', orderOverride || state.readingOrder).catch(function() {});
+      var normalized = _normalizeServerBookIdList(orderOverride || state.readingOrder);
+      serverRun('clientSaveReadingOrder', normalized).catch(function(err) {
+        console.warn('Reading order sync failed:', err);
+      });
+    }
+
+    function syncRecentIdsToServer(idsOverride) {
+      if (!hasServerRuntime()) return;
+      var normalized = _normalizeServerBookIdList(idsOverride || state.recentlyReadIds);
+      serverRun('clientSaveRecentIds', normalized).catch(function(err) {
+        console.warn('Recent IDs sync failed:', err);
+      });
     }
 
     function syncBookShelvesToServer(book) {
@@ -8108,15 +8171,36 @@
       serverRun('clientUpdateBook', book._serverBookId, { Shelves: toServerBookPayload(book).Shelves }).catch(function() {});
     }
 
+    function applyNytSnapshot(snapshot) {
+      if (!snapshot || typeof snapshot !== 'object') return;
+      if (snapshot.nytBadges && typeof snapshot.nytBadges === 'object') {
+        state.nytBadges = snapshot.nytBadges;
+      }
+      if (snapshot.nytBadgesByIsbn && typeof snapshot.nytBadgesByIsbn === 'object') {
+        state.nytBadgesByIsbn = snapshot.nytBadgesByIsbn;
+      }
+      if (Array.isArray(snapshot.nytFeed)) {
+        state.nytFeed = snapshot.nytFeed;
+      }
+      state.nytCacheDate = String(snapshot.nytCacheDate || state.nytCacheDate || '');
+    }
+
     function refreshFromServer() {
       if (!hasServerRuntime()) return Promise.resolve();
-      return serverRun('clientGetInitialData')
-        .then(function(data) {
+      return Promise.all([
+        serverRun('clientGetInitialData'),
+        serverRun('clientGetNytSnapshot').catch(function() { return null; })
+      ])
+        .then(function(results) {
+          var data = results[0];
+          var nytSnapshot = results[1];
           hydrateFromBackend(data);
+          applyNytSnapshot(nytSnapshot);
           fullRender();
         })
         .catch(function(err) {
           console.warn('Refresh from server failed:', err);
+          throw err;
         });
     }
 
@@ -9779,56 +9863,59 @@
     }
 
     state._nytFeedEnrichmentStarted = state._nytFeedEnrichmentStarted || {};
+    function buildNytSearchQuery(b) {
+      var isbn = b ? (b.isbn13 || b.isbn10 || b.isbn || '') : '';
+      var prefix = 'isbn:';
+      if (isbn) { return prefix + encodeURIComponent(isbn); }
+      var t = b && b.title ? String(b.title) : '';
+      var a = b && b.author ? String(b.author) : '';
+      var q = t && a ? t + ' ' + a : t || a;
+      return encodeURIComponent(q.trim());
+    }
     function enrichNytFeedCovers(lists) {
-      if (!lists || !lists.length) return;
+      if (!lists || !lists.length) { return; }
+      var olBase = 'https://openlibrary.org/search.json?q=';
+      var olSuffix = '&limit=1&fields=key,cover_i';
       lists.forEach(function(list) {
-        if (!Array.isArray(list.books)) return;
+        if (!Array.isArray(list.books)) { return; }
         list.books.slice(0, 4).forEach(function(book) {
-          if (book.coverId || (book.bookImage && isValidCoverUrl(book.bookImage)) || book._enriched) return;
+          if (book.coverId || (book.bookImage && isValidCoverUrl(book.bookImage)) || book._enriched) { return; }
           var cacheKey = book.isbn13 || book.isbn10 || book.isbn || book.title || '';
-          if (!cacheKey || state._nytFeedEnrichmentStarted[cacheKey]) return;
+          if (!cacheKey || state._nytFeedEnrichmentStarted[cacheKey]) { return; }
           state._nytFeedEnrichmentStarted[cacheKey] = true;
-
-          var query = (book.isbn13 || book.isbn10 || book.isbn)
-            ? 'isbn:' + encodeURIComponent(book.isbn13 || book.isbn10 || book.isbn)
-            : encodeURIComponent((book.title || '') + ' ' + (book.author || ''));
-          
-          fetch('https://openlibrary.org/search.json?q=' + query + '&limit=1&fields=key,cover_i')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-              var doc = data.docs && data.docs[0];
-              if (doc && doc.cover_i) {
-                book.coverId = doc.cover_i;
-                book._enriched = true;
-                if (state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
-              } else if (!doc && (book.isbn13 || book.isbn10 || book.isbn)) {
-                var sq = encodeURIComponent((book.title || '') + ' ' + (book.author || ''));
-                fetch('https://openlibrary.org/search.json?q=' + sq + '&limit=1&fields=key,cover_i')
-                  .then(function(r2) { return r2.json(); })
-                  .then(function(d2) {
-                    var doc2 = d2.docs && d2.docs[0];
-                    if (doc2 && doc2.cover_i) {
-                      book.coverId = doc2.cover_i;
-                      book._enriched = true;
-                      if (state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
-                    } else {
-                      fetchWikipediaCover(book.title, function(url) {
-                        if (url) { book.bookImage = url; }
-                        book._enriched = true;
-                        if (url && state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
-                      });
-                    }
-                  }).catch(function() { state._nytFeedEnrichmentStarted[cacheKey] = false; });
-              } else {
-                fetchWikipediaCover(book.title, function(url) {
-                  if (url) { book.bookImage = url; }
+          var query = buildNytSearchQuery(book);
+          var url1 = olBase + query + olSuffix;
+          fetch(url1).then(function(r) { return r.json(); }).then(function(data) {
+            var doc = data.docs && data.docs[0];
+            if (doc && doc.cover_i) {
+              book.coverId = doc.cover_i;
+              book._enriched = true;
+              if (state.activeTab === 'insights') { setTimeout(renderNytFeedPanel, 100); }
+            } else if (!doc && (book.isbn13 || book.isbn10 || book.isbn)) {
+              var sq = buildNytSearchQuery({ title: book.title, author: book.author });
+              var url2 = olBase + sq + olSuffix;
+              fetch(url2).then(function(r2) { return r2.json(); }).then(function(d2) {
+                var doc2 = d2.docs && d2.docs[0];
+                if (doc2 && doc2.cover_i) {
+                  book.coverId = doc2.cover_i;
                   book._enriched = true;
-                  if (url && state.activeTab === 'insights') setTimeout(renderNytFeedPanel, 100);
-                });
-              }
-            }).catch(function() {
-              state._nytFeedEnrichmentStarted[cacheKey] = false;
-            });
+                  if (state.activeTab === 'insights') { setTimeout(renderNytFeedPanel, 100); }
+                } else {
+                  fetchWikipediaCover(book.title, function(url) {
+                    if (url) { book.bookImage = url; }
+                    book._enriched = true;
+                    if (url && state.activeTab === 'insights') { setTimeout(renderNytFeedPanel, 100); }
+                  });
+                }
+              }).catch(function() { state._nytFeedEnrichmentStarted[cacheKey] = false; });
+            } else {
+              fetchWikipediaCover(book.title, function(url) {
+                if (url) { book.bookImage = url; }
+                book._enriched = true;
+                if (url && state.activeTab === 'insights') { setTimeout(renderNytFeedPanel, 100); }
+              });
+            }
+          }).catch(function() { state._nytFeedEnrichmentStarted[cacheKey] = false; });
         });
       });
     }
@@ -12857,9 +12944,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       });
       if (changed > 0) {
         saveData();
-        if (hasServerRuntime()) {
-          serverRun('clientSaveReadingOrder', state.readingOrder).catch(function() {});
-        }
+        syncReadingOrderToServer();
       }
       return changed;
     }
@@ -12899,10 +12984,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       });
       if (removed > 0) {
         saveData();
-        if (hasServerRuntime()) {
-          serverRun('clientSaveReadingOrder', state.readingOrder).catch(function() {});
-          serverRun('clientSaveRecentIds', state.recentlyReadIds).catch(function() {});
-        }
+        syncReadingOrderToServer();
+        syncRecentIdsToServer();
       }
       return removed;
     }
@@ -14085,7 +14168,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             state.readingOrder = state.readingOrder.filter(function(rid) { return rid !== finishBookId; });
             if (hasServerRuntime()) {
               if (finishBook._serverBookId) serverRun('clientUpdateBook', finishBook._serverBookId, { Status: mapUiStatusToSheet('finished'), DateFinished: finishBook.dateFinished }).catch(function() {});
-              serverRun('clientSaveReadingOrder', state.readingOrder).catch(function() {});
+              syncReadingOrderToServer();
             }
             saveData();
             renderCurrentlyReadingHero();
@@ -14116,7 +14199,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
                 state.readingOrder = state.readingOrder.filter(function(rid) { return rid !== menuDnfBookId; });
                 if (hasServerRuntime()) {
                   if (menuDnfBook._serverBookId) serverRun('clientUpdateBook', menuDnfBook._serverBookId, { Status: mapUiStatusToSheet('dnf') }).catch(function() {});
-                  serverRun('clientSaveReadingOrder', state.readingOrder).catch(function() {});
+                  syncReadingOrderToServer();
                 }
                 saveData();
                 renderCurrentlyReadingHero();
@@ -14898,10 +14981,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
               state.bulkStatusDropdownOpen = false;
               state.bulkShelfDropdownOpen = false;
               saveData();
-              if (hasServerRuntime()) {
-                serverRun('clientSaveReadingOrder', state.readingOrder).catch(function() {});
-                serverRun('clientSaveRecentIds', state.recentlyReadIds).catch(function() {});
-              }
+              syncReadingOrderToServer();
+              syncRecentIdsToServer();
               showToast(delCount + ' book' + (delCount !== 1 ? 's' : '') + ' deleted', 'success');
               fullRender();
               if (state.fullLibraryOpen) { state.fullLibraryOpen = true; state.bulkSelectMode = true; renderFullLibraryModal(); hydrateIcons(); }
@@ -14987,8 +15068,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
           if (hasServerRuntime()) {
             serverRun('clientClearDemoData').catch(function(err) { console.warn('Clear demo failed:', err); });
             serverRun('clientSaveUiPrefs', { demoCleared: true }).catch(function() {});
-            serverRun('clientSaveReadingOrder', []).catch(function() {});
-            serverRun('clientSaveRecentIds', []).catch(function() {});
+            syncReadingOrderToServer([]);
+            syncRecentIdsToServer([]);
           }
           saveData();
           renderDemoStrip();
@@ -15033,8 +15114,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
           state.readingOrder = [];
           state.recentlyReadIds = [];
           if (hasServerRuntime()) {
-            serverRun('clientSaveReadingOrder', []).catch(function() {});
-            serverRun('clientSaveRecentIds', []).catch(function() {});
+            syncReadingOrderToServer([]);
+            syncRecentIdsToServer([]);
           }
           saveData();
           fullRender();
@@ -15137,7 +15218,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
                 .then(function(res) {
                   if (res && res.imported) {
                     // Re-fetch to get server BookIds
-                    refreshFromServer();
+                    refreshFromServer().catch(function() {});
                   }
                 })
                 .catch(function(err) {
@@ -15295,8 +15376,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
               if (hasServerRuntime()) {
                 serverRun('clientClearDemoData').catch(function(err) { console.warn('Clear demo failed:', err); });
                 serverRun('clientSaveUiPrefs', { demoCleared: true }).catch(function() {});
-                serverRun('clientSaveReadingOrder', []).catch(function() {});
-                serverRun('clientSaveRecentIds', []).catch(function() {});
+                syncReadingOrderToServer([]);
+                syncRecentIdsToServer([]);
               }
               saveData();
               state.showSettings = false;
@@ -16024,10 +16105,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
               if (idx > -1) allBooks.splice(idx, 1);
               state.readingOrder = state.readingOrder.filter(function(rid) { return rid !== state.detailBookId; });
               state.recentlyReadIds = state.recentlyReadIds.filter(function(rid) { return rid !== state.detailBookId; });
-              if (hasServerRuntime()) {
-                serverRun('clientSaveReadingOrder', state.readingOrder).catch(function() {});
-                serverRun('clientSaveRecentIds', state.recentlyReadIds).catch(function() {});
-              }
+              syncReadingOrderToServer();
+              syncRecentIdsToServer();
               state.showBookDetail = false;
               state.detailBookId = null;
               renderBookDetailModal();
@@ -16274,9 +16353,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             state.recentlyReadIds = [id, ...state.recentlyReadIds].slice(0, 20);
           }
           saveData();
-          if (hasServerRuntime()) {
-            serverRun('clientSaveRecentIds', state.recentlyReadIds).catch(function() {});
-          }
+          syncRecentIdsToServer();
           renderLibrary();
           if (state.fullLibraryOpen) renderFullLibraryModal();
           hydrateIcons();
@@ -17810,9 +17887,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             }
             state.readingOrder = order;
             saveData();
-            if (hasServerRuntime()) {
-              serverRun('clientSaveReadingOrder', state.readingOrder).catch(function() {});
-            }
+            syncReadingOrderToServer();
             renderCurrentlyReadingHero();
             hydrateIcons();
           }
@@ -18252,52 +18327,85 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       root.style.setProperty('--mobile-tabbar-offset', tabBarVisible ? ((tabBar.offsetHeight || 72) + 'px') : '0px');
     }
 
+    function dismissHydrationGate() {
+      var gate = document.getElementById('hydrationGate');
+      if (gate) gate.classList.add('hydration-done');
+    }
+
     function bootstrapApp() {
-      _audioEl = document.getElementById('audioPlayer');
-      loadData();
-      bindEvents();
-      fullRender();
-      syncMobileLayoutMetrics();
-      restoreAudiobookPlayback(state.currentAudioId);
+      // Hard fallback: never leave the hydration gate spinning forever.
+      var hydrationFailsafe = setTimeout(function() {
+        dismissHydrationGate();
+        console.warn('Hydration gate fallback activated');
+      }, 45000);
 
-      // Track listening time every 30s while audio is playing
-      setInterval(function() {
-        if (_audioEl && !_audioEl.paused && state.currentAudioId) {
-          state.totalListeningMins = (state.totalListeningMins || 0) + 0.5;
-          saveAudioPos();
-          saveData();
+      try {
+        _audioEl = document.getElementById('audioPlayer');
+        loadData();
+        bindEvents();
+        fullRender();
+        syncMobileLayoutMetrics();
+        restoreAudiobookPlayback(state.currentAudioId);
+
+        // Track listening time every 30s while audio is playing
+        setInterval(function() {
+          if (_audioEl && !_audioEl.paused && state.currentAudioId) {
+            state.totalListeningMins = (state.totalListeningMins || 0) + 0.5;
+            saveAudioPos();
+            saveData();
+          }
+        }, 30000);
+
+        if (!hasServerRuntime()) {
+          // No backend — hide gate immediately
+          clearTimeout(hydrationFailsafe);
+          dismissHydrationGate();
+          return;
         }
-      }, 30000);
 
-      if (!hasServerRuntime()) {
-        // No backend — hide gate immediately
-        var gate = document.getElementById('hydrationGate');
-        if (gate) gate.classList.add('hydration-done');
-        return;
+        // Show loading gate while fetching server data
+        var hydrationGate = document.getElementById('hydrationGate');
+        if (hydrationGate) hydrationGate.classList.remove('hydration-done');
+
+        withTimeout(serverRun('clientGetInitialData'), 25000, 'Initial sync')
+          .then(function(data) {
+            hydrateFromBackend(data);
+            clearTimeout(hydrationFailsafe);
+            dismissHydrationGate();
+            requestAnimationFrame(function() {
+              fullRender();
+            });
+            // Load NYT payload after core hydration so initial sync stays fast.
+            serverRun('clientGetNytSnapshot')
+              .then(function(snapshot) {
+                applyNytSnapshot(snapshot);
+                fullRender();
+              })
+              .catch(function() {});
+            // Show sync button now that backend is confirmed
+            var syncBtn = document.getElementById('syncFromSheetBtn');
+            if (syncBtn) syncBtn.style.display = '';
+            restoreAudiobookPlayback(state.currentAudioId).catch(function() {});
+          })
+          .catch(function(err) {
+            console.warn('Backend unavailable; continuing with mock/local data:', err);
+            clearTimeout(hydrationFailsafe);
+            dismissHydrationGate();
+            var errMsg = String((err && err.message) || err || '');
+            var authLikely = /authorize|authori[sz]ation|permission|oauth|timed out/i.test(errMsg);
+            showToast(
+              authLikely
+                ? '⚠️ Google authorization is required. Open Apps Script, run any function once, approve access, then reload.'
+                : '⚠️ Could not connect to your Google Sheet. Showing local data only.',
+              'error'
+            );
+          })
+          .then(function() {});
+      } catch (err) {
+        clearTimeout(hydrationFailsafe);
+        console.error('Bootstrap failed before hydration completed:', err);
+        dismissHydrationGate();
       }
-
-      // Show loading gate while fetching server data
-      var hydrationGate = document.getElementById('hydrationGate');
-      if (hydrationGate) hydrationGate.classList.remove('hydration-done');
-
-      serverRun('clientGetInitialData')
-        .then(function(data) {
-          hydrateFromBackend(data);
-          fullRender();
-          // Show sync button now that backend is confirmed
-          var syncBtn = document.getElementById('syncFromSheetBtn');
-          if (syncBtn) syncBtn.style.display = '';
-          return restoreAudiobookPlayback(state.currentAudioId);
-        })
-        .catch(function(err) {
-          console.warn('Backend unavailable; continuing with mock/local data:', err);
-          showToast('⚠️ Could not connect to your Google Sheet. Showing local data only.', 'error');
-        })
-        .then(function() {
-          // Always dismiss the gate — success or failure
-          var gate = document.getElementById('hydrationGate');
-          if (gate) gate.classList.add('hydration-done');
-        });
     }
 
     bootstrapApp();
@@ -18317,7 +18425,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             }
             if (version !== _lastSyncVersion) {
               _lastSyncVersion = version;
-              refreshFromServer();
+              refreshFromServer().catch(function() {});
             }
           })
           .catch(function() { /* silent — poll will retry next cycle */ });
@@ -18352,7 +18460,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
         if (document.visibilityState !== 'visible') return;
 
         // Always refresh from server when tab regains focus (catches sheet edits)
-        refreshFromServer();
+        refreshFromServer().catch(function() {});
 
         var today = new Date().toISOString().slice(0, 10);
         if (today !== _lastRenderedDate) {
