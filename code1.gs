@@ -2094,22 +2094,36 @@ function clientApplyThemeToSheet(themeName) {
 	// 48 (GOALS), 58 (FULL LIBRARY).
 	var myYear = ss.getSheetByName(SHEET_MYYEAR);
 	if (myYear) {
+		myYear.setTabColor(t.accent);
+		try { myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg); } catch (e) {}
+		try { myYear.getRange(2, 7, 2, 6).setBackground(t.headerBg).setFontColor('#FFFFFF'); } catch (e) {}
+		try { myYear.getRange(4, 7, 2, 6).setBackground(t.headerBg).setFontColor('#FFFFFF'); } catch (e) {}
+		var fullLibraryLabel = '   FULL LIBRARY';
 		try {
-			myYear.setTabColor(t.accent);
-			myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg);
-			myYear.getRange(2, 7, 2, 6)
-				.setBackground(t.headerBg)
-				.setFontColor('#FFFFFF');
-			myYear.getRange(4, 7, 2, 6)
-				.setBackground(t.headerBg)
-				.setFontColor('#FFFFFF');
-			['A12:L12', 'A16:L16', 'A48:L48', 'A58:L58'].forEach(function(a1) {
-				myYear.getRange(a1)
-					.setBackground(t.headerBg)
-					.setFontColor(t.headerText || '#FFFFFF');
-			});
-			SpreadsheetApp.flush();
+			fullLibraryLabel = String(myYear.getRange(58, 1).getDisplayValue() || fullLibraryLabel);
 		} catch (e) {}
+		[
+			{ a1:'A12:L12', value:'   COVER WALL' },
+			{ a1:'A16:L16', value:'   ANALYTICS' },
+			{ a1:'A48:L48', value:'   GOALS  ·  CHALLENGES  ·  SHELVES' },
+			{ a1:'A58:L58', value:fullLibraryLabel }
+		].forEach(function(spec) {
+			try {
+				var headerRange = myYear.getRange(spec.a1);
+				try { headerRange.breakApart(); } catch (e2) {}
+				try { headerRange.merge(); } catch (e3) {}
+				headerRange
+					.setValue(spec.value)
+					.setBackground(t.headerBg)
+					.setFontColor(t.headerText || '#FFFFFF')
+					.setFontFamily('Montserrat')
+					.setFontSize(11)
+					.setFontWeight('bold')
+					.setHorizontalAlignment('left')
+					.setVerticalAlignment('middle');
+			} catch (e4) {}
+		});
+		SpreadsheetApp.flush();
 	}
 	// Hidden utility sheets — update tab colour and banner row only
 	[
