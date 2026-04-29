@@ -5972,8 +5972,8 @@
         </div>
       </div>
       <div id="headerCoversToggleSlot"></div>
-      <button class="sync-btn" id="syncFromSheetBtn" type="button" title="Sync from Google Sheet" style="display:none;background:color-mix(in srgb, var(--primary-1) 12%, transparent);border:1.5px solid var(--primary-1);border-radius:8px;padding:5px 10px;cursor:pointer;color:var(--primary-1);font-weight:700;font-size:0.82rem;transition:all 0.2s;white-space:nowrap;" onclick="return false;"><i data-lucide="refresh-cw" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;"></i>Sync</button>
-      <button class="open-sheet-btn" id="openSheetBtn" type="button" title="Open Google Sheet in a new tab" style="display:none;background:transparent;border:1.5px solid var(--primary-1);border-radius:8px;padding:5px 10px;cursor:pointer;color:var(--primary-1);font-weight:700;font-size:0.82rem;transition:all 0.2s;white-space:nowrap;margin-left:6px;"><i data-lucide="external-link" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;"></i>Sheet</button>
+      <button class="sync-btn" id="syncFromSheetBtn" type="button" title="Sync from Google Sheet" style="display:none;background:rgba(255,255,255,0.18);border:1.5px solid rgba(255,255,255,0.85);border-radius:8px;padding:5px 10px;cursor:pointer;color:#fff;font-weight:700;font-size:0.82rem;transition:all 0.2s;white-space:nowrap;backdrop-filter:blur(4px);" onclick="return false;"><i data-lucide="refresh-cw" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;"></i>Sync</button>
+      <button class="open-sheet-btn" id="openSheetBtn" type="button" title="Open Google Sheet in a new tab" style="display:none;background:rgba(255,255,255,0.18);border:1.5px solid rgba(255,255,255,0.85);border-radius:8px;padding:5px 10px;cursor:pointer;color:#fff;font-weight:700;font-size:0.82rem;transition:all 0.2s;white-space:nowrap;margin-left:6px;backdrop-filter:blur(4px);"><i data-lucide="external-link" style="width:14px;height:14px;vertical-align:middle;margin-right:3px;"></i>Sheet</button>
       <div class="stats-row" id="headerStats"></div>
     </div>
   </header>
@@ -9819,7 +9819,7 @@
         {
           list: 'hardcover-fiction',
           listDisplay: 'Hardcover Fiction',
-          updatedAt: state.nytCacheDate || '2026-04-07',
+          updatedAt: state.nytCacheDate || '',
           books: [
             { rank: 1, title: 'Beach Read', author: 'Emily Henry', isbn13: '9781250272232', weeksOn: 6, description: 'A sharp, buzzy romance still dominating book-club chatter.' },
             { rank: 2, title: 'The Seven Husbands of Evelyn Hugo', author: 'Taylor Jenkins Reid', isbn13: '9781501161933', weeksOn: 18, description: 'A glamorous backlist favorite with staying power.' },
@@ -9829,7 +9829,7 @@
         {
           list: 'hardcover-nonfiction',
           listDisplay: 'Hardcover Nonfiction',
-          updatedAt: state.nytCacheDate || '2026-04-07',
+          updatedAt: state.nytCacheDate || '',
           books: [
             { rank: 1, title: 'Atomic Habits', author: 'James Clear', isbn13: '9780735211292', weeksOn: 42, description: 'A perennial productivity bestseller with major crossover appeal.' },
             { rank: 2, title: 'Braiding Sweetgrass', author: 'Robin Wall Kimmerer', isbn13: '9781571313560', weeksOn: 21, description: 'A thoughtful favorite that keeps reappearing in recommendation circles.' },
@@ -9839,7 +9839,7 @@
         {
           list: 'young-adult-hardcover',
           listDisplay: 'Young Adult Hardcover',
-          updatedAt: state.nytCacheDate || '2026-04-07',
+          updatedAt: state.nytCacheDate || '',
           books: [
             { rank: 1, title: 'Divine Rivals', author: 'Rebecca Ross', isbn13: '9781250883650', weeksOn: 14, description: 'Romantasy heat continues to spill into YA charts.' },
             { rank: 2, title: 'Powerless', author: 'Lauren Roberts', isbn13: '9781665954587', weeksOn: 11, description: 'A fast-rising title with strong social buzz.' },
@@ -9849,7 +9849,7 @@
         {
           list: 'graphic-books-and-manga',
           listDisplay: 'Graphic Books & Manga',
-          updatedAt: state.nytCacheDate || '2026-04-07',
+          updatedAt: state.nytCacheDate || '',
           books: [
             { rank: 1, title: 'Jujutsu Kaisen, Vol. 25', author: 'Gege Akutami', isbn13: '9781974743018', weeksOn: 5, description: 'Manga releases keep pulling strong weekly momentum.' },
             { rank: 2, title: 'Heartstopper, Vol. 5', author: 'Alice Oseman', isbn13: '9781338885514', weeksOn: 12, description: 'A fan-favorite series that continues to chart steadily.' },
@@ -9917,6 +9917,13 @@
       });
     }
 
+    function _fmtNytDate(d) {
+      var p = (d || '').split('-');
+      return (p.length === 3 && p[0].length === 4)
+        ? (parseInt(p[1], 10) + '/' + parseInt(p[2], 10) + '/' + p[0])
+        : d;
+    }
+
     function renderNytFeedPanel() {
       const calloutEl = document.getElementById('nytFeedCallout');
       const stampEl = document.getElementById('nytFeedStamp');
@@ -9928,7 +9935,7 @@
         calloutEl.innerHTML = `<span class="callout-icon">📰</span><span><strong>Never miss a trend.</strong> Live weekly highlights from the New York Times Best Seller list, tucked into Insights so the main layout stays untouched.</span>`;
       }
       if (stampEl) {
-        stampEl.textContent = updatedAt ? ('Updated ' + updatedAt) : 'Demo sample feed';
+        stampEl.textContent = updatedAt ? ('Updated ' + _fmtNytDate(updatedAt)) : 'Demo sample feed';
       }
       if (!gridEl) return;
       if (!lists.length) {
@@ -13983,6 +13990,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
           if (hasServerRuntime()) {
             serverRun('clientSetSetting', 'Theme', state.currentTheme)
               .catch(function(err) { console.warn('Theme save failed:', err); });
+            // Sync palette to Google Sheet in the background (fast: colours only, no rebuild)
+            serverRun('clientApplyThemeToSheet', state.currentTheme).catch(function() {});
           }
           state.showThemeSelector = false;
           if (state.showWelcomeBanner) {
@@ -15374,9 +15383,24 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
 
         const insightsTabBtn = e.target.closest('[data-insights-tab]');
         if (insightsTabBtn) {
-          state.insightsTab = insightsTabBtn.dataset.insightsTab || 'progress';
+          const _newTab = insightsTabBtn.dataset.insightsTab || 'progress';
+          const _switchingToNyt = _newTab === 'nyt' && state.insightsTab !== 'nyt';
+          state.insightsTab = _newTab;
           renderInsightsModal();
           hydrateIcons();
+          // Refresh NYT feed from server cache whenever the user clicks the NYT tab
+          if (_switchingToNyt && hasServerRuntime() && !state._nytFetchingNow) {
+            state._nytFetchingNow = true;
+            var _nytStampEl = document.getElementById('nytFeedStamp');
+            if (_nytStampEl) _nytStampEl.textContent = 'Refreshing…';
+            serverRun('clientGetNytSnapshot')
+              .then(function(snapshot) {
+                state._nytFetchingNow = false;
+                applyNytSnapshot(snapshot);
+                if (state.insightsTab === 'nyt') renderNytFeedPanel();
+              })
+              .catch(function() { state._nytFetchingNow = false; });
+          }
           return;
         }
 

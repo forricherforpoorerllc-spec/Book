@@ -35,9 +35,9 @@
  *    NYT:           https://developer.nytimes.com  (free, 500 req/day)
  *    PodcastIndex:  https://podcastindex.org/      (free)
  * ===================================================================== */
-var NYT_API_KEY              = '';
-var PODCAST_INDEX_API_KEY    = '';
-var PODCAST_INDEX_API_SECRET = '';
+var NYT_API_KEY              = 'XirX9Yl9FnG5UAyFxD9PaALKFkrD68FKDyHssu0ZDzHW1qPJ';
+var PODCAST_INDEX_API_KEY    = 'Y2R54KZNJ2HMPKTRMKMT';
+var PODCAST_INDEX_API_SECRET = 'JMuRh9Ec#^69cb3wm22tQbkyTPwXqtFfr8dVy9zU';
 
 function _dbLiteInitializeSheets() {
 	// Migrate old default theme: only for Product 1 — 'blossom' (pink) → 'romantic' (red).
@@ -1197,16 +1197,17 @@ function doGet(e) {
 	var view = _resolveWebAppView(e);
 	// Self-register the live deployment URL on every successful page load.
 	// We are by definition being served from a working URL right now — so
-	// trust it, store it, and the sheet menu's "📖 Open My App" item will
-	// always have a verified, current link without needing UrlFetchApp pings
-	// or any other guesswork. This survives redeploys: the next time the
-	// owner visits, the latest /exec URL gets saved automatically.
+	// trust it, store it. Always coerce /dev → /exec because /dev URLs only
+	// work for the script owner and get rejected by buyers.
 	try {
 		var liveUrl = ScriptApp.getService().getUrl();
-		if (liveUrl && /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/(exec|dev)/.test(liveUrl)) {
-			var dprops = PropertiesService.getDocumentProperties();
-			if (dprops.getProperty('WEB_APP_URL') !== liveUrl) {
-				dprops.setProperty('WEB_APP_URL', liveUrl);
+		if (liveUrl) {
+			liveUrl = String(liveUrl).replace(/\/dev(\?.*)?$/, '/exec$1');
+			if (/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec/.test(liveUrl)) {
+				var dprops = PropertiesService.getDocumentProperties();
+				if (dprops.getProperty('WEB_APP_URL') !== liveUrl) {
+					dprops.setProperty('WEB_APP_URL', liveUrl);
+				}
 			}
 		}
 	} catch (eRegister) { /* never block page load on this */ }
@@ -1721,6 +1722,23 @@ function clientGetInitialData() {
 }
 
 function clientGetNytSnapshot() {
+	// Auto-refresh the NYT cache if it is missing or older than 6 days.
+	// NYT Best Seller lists update weekly, so 6 days ensures buyers always
+	// see fresh data. The refresh call takes ~60 s (8 lists × 6.5 s sleep
+	// for rate-limiting) — well within the 6-minute Apps Script limit.
+	// The client shows "Refreshing…" during this wait, which is accurate.
+	var props = PropertiesService.getScriptProperties();
+	var cacheDate = props.getProperty('NYT_CACHE_DATE') || '';
+	var needsRefresh = !cacheDate;
+	if (!needsRefresh) {
+		try {
+			var ageDays = (new Date() - new Date(cacheDate)) / 86400000;
+			if (ageDays > 6) needsRefresh = true;
+		} catch (e) { needsRefresh = true; }
+	}
+	if (needsRefresh) {
+		try { clientRefreshNYTCache(); } catch (e) {}
+	}
 	var nytBundle = { byBookId: {}, byIsbn: {} };
 	var nytFeedBundle = { lists: [], updatedAt: '' };
 	try { nytBundle = clientGetNYTBadgesForLibrary(); } catch (e) {}
@@ -1729,7 +1747,7 @@ function clientGetNytSnapshot() {
 		nytBadges: nytBundle.byBookId || {},
 		nytBadgesByIsbn: nytBundle.byIsbn || {},
 		nytFeed: nytFeedBundle.lists || [],
-		nytCacheDate: nytFeedBundle.updatedAt || PropertiesService.getScriptProperties().getProperty('NYT_CACHE_DATE') || ''
+		nytCacheDate: nytFeedBundle.updatedAt || props.getProperty('NYT_CACHE_DATE') || ''
 	};
 }
 
@@ -2035,6 +2053,39 @@ function clientSetSettings(settingsObj) {
 		if (!settingsObj || typeof settingsObj !== 'object') return;
 		Object.keys(settingsObj).forEach(function(k) { clientSetSetting(k, settingsObj[k]); });
 	} catch (e) {}
+}
+
+// Lightweight sheet palette sync — called from the webapp theme picker so the
+// Library header and hidden-tab colours update within a few seconds without
+// running the heavyweight full _dbLiteInitializeSheets() rebuild.
+function clientApplyThemeToSheet(themeName) {
+	var valid = _validateTheme(themeName);
+	if (!valid) return;
+	var ss = _ss();
+	var t = _dbLiteTheme(valid);
+	// Library sheet — banner rows 1-6 + tab colour
+	var lib = ss.getSheetByName(SHEET_LIBRARY);
+	if (lib) {
+		lib.setTabColor(t.accent);
+		var totalCols = LIBRARY_HEADERS.length + LIBRARY_DATA_COL - 1;
+		lib.getRange(1, 1, 6, totalCols).setBackground(t.headerBg);
+		// The two text blocks that span cols G-L also carry the header bg colour
+		try { lib.getRange(2, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
+		try { lib.getRange(4, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
+	}
+	// Hidden utility sheets — update tab colour and banner row only
+	[
+		{ name: SHEET_CHALLENGES, count: CHALLENGE_HEADERS.length  },
+		{ name: SHEET_SHELVES,    count: SHELF_HEADERS.length      },
+		{ name: SHEET_PROFILE,    count: PROFILE_HEADERS.length    },
+		{ name: SHEET_AUDIOBOOKS, count: AUDIOBOOK_HEADERS.length  }
+	].forEach(function(d) {
+		var s = ss.getSheetByName(d.name);
+		if (!s) return;
+		s.setTabColor(t.accent);
+		try { s.getRange(1, 1, 1, d.count).setBackground(t.headerBg); } catch (e) {}
+	});
+	_bumpSyncVersionSafe();
 }
 
 function clientSaveProfile(profileData) {
@@ -2845,13 +2896,16 @@ function installSyncTrigger() {
 // =====================================================================
 
 function resetDemoData() {
-	var ui = SpreadsheetApp.getUi();
-	var resp = ui.alert(
-		'Reset Demo Data',
-		'This will DELETE all rows in the Library sheet and re-seed fresh demo books with the correct column order.\n\nContinue?',
-		ui.ButtonSet.OK_CANCEL
-	);
-	if (resp !== ui.Button.OK) return;
+	var ui = null;
+	try { ui = SpreadsheetApp.getUi(); } catch (eUi) { ui = null; }
+	if (ui) {
+		var resp = ui.alert(
+			'Reset Demo Data',
+			'This will DELETE all rows in the Library sheet and re-seed fresh demo books with the correct column order.\n\nContinue?',
+			ui.ButtonSet.OK_CANCEL
+		);
+		if (resp !== ui.Button.OK) return;
+	}
 
 	// 1. Clear the DEMO_CLEARED flag so _seedDemoData will run again.
 	PropertiesService.getScriptProperties().deleteProperty('DEMO_CLEARED');
@@ -2870,29 +2924,56 @@ function resetDemoData() {
 	_seedDemoData();
 	_dbLiteInitializeSheets();
 
-	ui.alert('Done! Demo data has been reset with the correct column order.');
+	if (ui) ui.alert('Done! Demo data has been reset with the correct column order.');
 }
 
 function onOpen() {
-	// Always build the menu first so users can interact immediately,
-	// even if one-time initialization takes longer in the background.
+	// CRITICAL FIRST STEP: detect a fresh buyer copy and wipe seller-specific
+	// document state. When a buyer does File → Make a copy, the sheet's
+	// DocumentProperties (WEB_APP_URL, WELCOMED) travel with the copy — but
+	// the script's own ScriptProperties (SHEETS_INITIALIZED) do NOT. So if
+	// SHEETS_INITIALIZED is unset, this is a buyer's first open and the
+	// inherited URL points to the seller's deployment (which the buyer
+	// can't access). Wipe before the menu is built so the buyer sees
+	// "🚀 Set Up My App" and the wizard auto-pops.
+	try {
+		var sprops = PropertiesService.getScriptProperties();
+		if (sprops.getProperty('SHEETS_INITIALIZED') !== '1') {
+			try {
+				var dpWipe = PropertiesService.getDocumentProperties();
+				dpWipe.deleteProperty('WEB_APP_URL');
+				dpWipe.deleteProperty('WELCOMED');
+			} catch (eWipe) {}
+		}
+	} catch (eFirstOpen) {}
+
+	// NOTE: we deliberately do NOT auto-save ScriptApp.getService().getUrl()
+	// here on every onOpen. In container-bound scripts that API frequently
+	// returns stale or dead deployment URLs (the seller's old deployment, a
+	// pre-redeploy URL, etc.), which then route through Drive's URL gateway
+	// and surface as "Sorry, unable to open the file at this time."
+	//
+	// The ONLY reliable persistence path is:
+	//   1. Buyer pastes their fresh deployment URL into the setup wizard, OR
+	//   2. Buyer visits the live /exec URL once and doGet() self-registers it.
+	// Both confirm the URL actually serves THIS buyer’s app.
+
+	// Build the menu — ONE smart entry, no jargon, no "Reset" landmines.
+	// _smartOpenApp() figures out everything: detect URL, persist it,
+	// open the app, or run setup wizard only if truly necessary.
 	try {
 		var ui = SpreadsheetApp.getUi();
-		var isDeployed = false;
-		try { isDeployed = !!_getWebAppUrl(); } catch(e) {}
-
 		ui.createMenu(_buildJourneyTitle())
-			.addItem(isDeployed ? '📖 Open My App' : '🚀 Set Up My App',
-			         isDeployed ? '_openWebApp'    : '_setupMyApp')
+			.addItem('📖 Open My Reading App', '_smartOpenApp')
 			.addSeparator()
-			.addItem('🔗 Reset App URL', '_resetWebAppUrl')
-			.addItem('🎨 Refresh Styling & Colors', '_reStyleCurrentTheme')
+			.addItem('🎨 Refresh Sheet Styling', '_reStyleCurrentTheme')
 			.addItem('🗑  Clear All Books & Data',  'clientClearDemoData')
 			.addToUi();
 
 		// Auto-popup the setup wizard on first open if not yet deployed.
 		// Stored on document properties so it only fires once per buyer.
 		try {
+			var isDeployed = !!_getWebAppUrl();
 			var docProps = PropertiesService.getDocumentProperties();
 			if (!isDeployed && docProps.getProperty('WELCOMED') !== '1') {
 				docProps.setProperty('WELCOMED', '1');
@@ -2942,25 +3023,42 @@ function onOpen() {
 	} catch (e) { _log('error', 'onOpen', e); }
 }
 
+// Smart entry point used by the sheet menu. Self-heals: opens the app if
+// a verified URL is saved, otherwise launches the setup wizard.
+//
+// IMPORTANT: we DO NOT auto-save ScriptApp.getService().getUrl() here —
+// in container-bound scripts that API can return stale/dead deployment
+// URLs from previous deploys. The only URL we trust is one that has
+// been confirmed by either:
+//   (a) the user pasting it during setup, OR
+//   (b) doGet() self-registering it when the user visits the live URL
+// Both happen organically once the buyer opens their app even one time.
+function _smartOpenApp() {
+	var url = _getWebAppUrl();
+	if (!url) { _setupMyApp(); return; }
+	_openWebApp();
+}
+
 function _openWebApp() {
 	var url = _getWebAppUrl();
 	if (!url) { _setupMyApp(); return; }
-	// No fetch, no validation, no quota cost. The saved URL was registered
-	// by doGet() the last time the app was actually loaded — if it’s set,
-	// the deployment was live then. Redeploys auto-update the saved URL on
-	// the very next visit, so this stays current.
-	var safeUrl = String(url).replace(/[<>"']/g, '');
-	// Anchor target=_blank inside an HtmlService modal dialog is rewritten
-	// through Google's URL gateway, which can show a "Sorry, unable to open
-	// the file" Drive error for /macros/s/.../exec URLs. Using window.open
-	// from a button click sidesteps that gateway entirely.
+	// Coerce /dev → /exec just in case an older /dev URL was stored
+	url = String(url).replace(/\/dev(\?.*)?$/, '/exec$1');
+	var safeUrl = url.replace(/[<>"']/g, '');
+	// IMPORTANT: never use <a target="_blank"> for /macros/s/.../exec or
+	// /home/projects/... URLs from inside an HtmlService modal — Google
+	// rewrites those through the Drive URL gateway and shows the
+	// "Sorry, unable to open the file at this time" Drive error.
+	// window.open() from a real button click bypasses that gateway.
 	var html = HtmlService.createHtmlOutput(
 		'<div style="font-family:\'Google Sans\',Arial,sans-serif;padding:20px;text-align:center;">'
 		+ '<div style="font-size:32px;margin-bottom:10px;">📖</div>'
 		+ '<p style="margin:0 0 5px;font-size:13px;font-weight:700;color:#1f2937;">Your Reading App</p>'
-		+ '<p style="margin:0 0 14px;font-size:11px;color:#6b7280;word-break:break-all;">'
-		+ '<a id="appUrl" href="' + safeUrl + '" target="_blank" rel="noopener" '
-		+ 'style="color:#2563eb;text-decoration:underline;">' + safeUrl + '</a></p>'
+		+ '<a href="' + safeUrl + '" target="_blank" rel="noopener" '
+		+ 'style="display:block;margin:0 0 14px;font-size:11px;color:#1d4ed8;word-break:break-all;'
+		+ 'background:#f3f4f6;border-radius:6px;padding:8px 10px;border:1px solid #e5e7eb;'
+		+ 'text-decoration:underline;">'
+		+ safeUrl + '</a>'
 		+ '<button id="openBtn" type="button" '
 		+ 'style="background:#2563eb;color:#fff;border:none;border-radius:8px;'
 		+ 'padding:11px 28px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">'
@@ -3002,113 +3100,260 @@ function _setupMyApp() {
 	if (existingUrl) { _openWebApp(); return; }
 	var scriptEditorUrl = _getScriptEditorUrl();
 
+	// ─────────────────────────────────────────────────────────────────────
+	// Sequenced wizard for non-technical buyers (avid readers, stay-at-home
+	// parents). Designed so each screen has ONE clear action.
+	//
+	//   Screen 0  (silent)   → Auto-detect on load. If a deployment URL
+	//                          already exists for this copy, jump straight
+	//                          to "ready" without making the user do anything.
+	//   Screen 1  Welcome    → Big "Let's set this up" button.
+	//   Screen 2  Open Apps  → Single big purple button: opens script editor.
+	//                          When clicked, auto-advances to Screen 3.
+	//   Screen 3  Deploy     → Clear visual instructions for the deploy
+	//                          dialog. "I deployed it →" auto-detects URL.
+	//                          If found → ready. If not → paste fallback.
+	//   Screen 4  Paste URL  → Manual paste with validation.
+	//   Screen 5  Ready      → Success card with Open + Copy buttons.
+	//
+	// Reliability notes:
+	//   - doGet() in this script self-registers ScriptApp.getService().getUrl()
+	//     into Document Properties on every page load, so once the buyer
+	//     opens their app even once, the URL is locked in permanently.
+	//   - _checkDeployment() reads from Document Properties first, falling
+	//     back to ScriptApp.getService().getUrl(). Both buyer-specific.
+	//   - _saveManualWebAppUrl() validates format before saving.
+	// ─────────────────────────────────────────────────────────────────────
+
 	var html = HtmlService.createHtmlOutput(
 		'<style>*{box-sizing:border-box;margin:0;padding:0}'
-		+ 'body{font-family:"Google Sans",Arial,sans-serif;padding:16px 18px;font-size:13px;color:#1f2937;background:#fff}'
+		+ 'body{font-family:"Google Sans",Arial,sans-serif;padding:18px 20px 20px;font-size:13px;color:#1f2937;background:#fff}'
+		+ '.wiz-progress{display:flex;gap:5px;margin-bottom:14px}'
+		+ '.wiz-progress .dot{flex:1;height:4px;border-radius:2px;background:#e5e7eb;transition:background .2s}'
+		+ '.wiz-progress .dot.active{background:#2563eb}'
+		+ '.wiz-progress .dot.done{background:#16a34a}'
+		+ '.screen{display:none;animation:fadeIn .25s ease}'
+		+ '.screen.active{display:block}'
+		+ '@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}'
 		+ '.hd{text-align:center;margin-bottom:14px}'
-		+ '.hd .ico{font-size:32px;line-height:1;margin-bottom:6px}'
-		+ '.hd h2{font-size:16px;font-weight:800;color:#111827;margin-bottom:4px}'
-		+ '.hd p{color:#6b7280;font-size:11px;line-height:1.45}'
-		+ '.note{margin:0 0 12px;padding:10px 11px;border-radius:10px;background:#eff6ff;border:1px solid #bfdbfe}'
-		+ '.note b{display:block;color:#1d4ed8;font-size:11.5px;margin-bottom:3px}'
-		+ '.note span{display:block;color:#475569;font-size:11px;line-height:1.45}'
-		+ '.step{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #f3f4f6;align-items:flex-start}'
-		+ '.num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#2563eb;color:#fff;'
-		+ 'display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800}'
-		+ '.st{font-weight:700;font-size:12px;margin-bottom:1px}'
-		+ '.sb{color:#6b7280;font-size:11.5px;line-height:1.4}'
+		+ '.hd .ico{font-size:36px;line-height:1;margin-bottom:6px}'
+		+ '.hd h2{font-size:17px;font-weight:800;color:#111827;margin-bottom:5px}'
+		+ '.hd p{color:#6b7280;font-size:12px;line-height:1.5;max-width:340px;margin:0 auto}'
+		+ '.spin{display:inline-block;width:30px;height:30px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:sp .8s linear infinite}'
+		+ '@keyframes sp{to{transform:rotate(360deg)}}'
+		+ '.center{text-align:center}'
+		+ '.btn{width:100%;padding:13px;border:none;border-radius:10px;font-size:13px;font-weight:700;'
+		+ 'cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:6px;text-decoration:none}'
+		+ '.btn-primary{background:#2563eb;color:#fff}'
+		+ '.btn-primary:hover{background:#1d4ed8}'
+		+ '.btn-secondary{background:#fff;color:#374151;border:1px solid #d1d5db;padding:10px}'
+		+ '.btn-secondary:hover{background:#f9fafb}'
+		+ '.btn-success{background:#16a34a;color:#fff}'
+		+ '.btn-link{background:transparent;color:#6b7280;font-weight:600;font-size:11px;padding:8px}'
+		+ '.btn:disabled{opacity:.5;cursor:default}'
+		+ '.btn-row{display:flex;gap:8px;margin-top:10px}'
+		+ '.btn-row .btn{margin-top:0}'
+		+ '.steps{margin:0 0 14px}'
+		+ '.step{display:flex;gap:10px;padding:9px 0;align-items:flex-start;border-bottom:1px solid #f3f4f6}'
+		+ '.step:last-child{border-bottom:none}'
+		+ '.num{flex:0 0 24px;width:24px;height:24px;border-radius:50%;background:#dbeafe;color:#1d4ed8;'
+		+ 'display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}'
+		+ '.st{font-weight:700;font-size:12.5px;color:#111827;line-height:1.4;margin-bottom:2px}'
+		+ '.sb{color:#6b7280;font-size:11.5px;line-height:1.5}'
 		+ '.sb b{color:#374151}'
-		+ '.quick{display:block;width:100%;text-align:center;text-decoration:none;margin:0 0 10px;padding:10px 12px;'
-		+ 'border-radius:10px;background:#e0e7ff;border:1px solid #c7d2fe;color:#3730a3;font-size:12px;font-weight:700}'
-		+ '.btn{width:100%;padding:12px;background:#2563eb;color:#fff;border:none;border-radius:10px;'
-		+ 'font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:12px}'
-		+ '.btn:disabled{opacity:0.5;cursor:default}'
-		+ '.input{width:100%;margin-top:10px;padding:10px 11px;border:1px solid #d1d5db;border-radius:10px;'
-		+ 'font-size:11px;outline:none;color:#1f2937}'
+		+ '.input{width:100%;padding:11px 12px;border:1.5px solid #d1d5db;border-radius:10px;'
+		+ 'font-size:11.5px;outline:none;color:#1f2937;font-family:inherit;margin-bottom:8px}'
 		+ '.input:focus{border-color:#60a5fa;box-shadow:0 0 0 3px rgba(96,165,250,.18)}'
-		+ '.btn2{width:100%;padding:10px;background:#fff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:10px;'
-		+ 'font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:8px}'
-		+ '.sub{margin-top:6px;color:#6b7280;font-size:10.5px;text-align:center;line-height:1.4}'
-		+ '.ok{display:none;margin-top:12px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;'
-		+ 'border-radius:8px;text-align:center}'
-		+ '.ok .tick{font-size:20px;margin-bottom:5px}'
-		+ '.ok p{font-size:12px;color:#166534;margin-bottom:8px;font-weight:600}'
-		+ '.ok a{display:inline-block;background:#16a34a;color:#fff;text-decoration:none;'
-		+ 'border-radius:6px;padding:8px 16px;font-size:12px;font-weight:700}'
-		+ '.ok small{display:block;margin-top:7px;color:#6b7280;font-size:10.5px}'
-		+ '#msg{min-height:14px;margin-top:7px;font-size:11px;color:#ef4444;text-align:center}'
+		+ '.tip{margin:10px 0 0;padding:10px 12px;border-radius:10px;background:#fef3c7;border:1px solid #fde68a;'
+		+ 'color:#78350f;font-size:11px;line-height:1.5}'
+		+ '.tip b{color:#92400e}'
+		+ '.url-chip{font-size:10.5px;color:#374151;background:#f3f4f6;border-radius:8px;padding:8px 12px;'
+		+ 'word-break:break-all;margin:8px 0 14px;display:block;border:1px solid #e5e7eb}'
+		+ '.success-tick{font-size:42px;margin-bottom:8px}'
+		+ '.success-h{font-size:18px;color:#166534;font-weight:800;margin-bottom:4px}'
+		+ '.success-p{color:#4b5563;font-size:12px;margin-bottom:8px}'
+		+ '#msg{min-height:14px;margin-top:8px;font-size:11.5px;text-align:center;color:#ef4444}'
+		+ '#msg.ok{color:#16a34a}'
 		+ '</style>'
+
+		// Progress dots
+		+ '<div class="wiz-progress">'
+		+ '<div class="dot" id="dot-1"></div>'
+		+ '<div class="dot" id="dot-2"></div>'
+		+ '<div class="dot" id="dot-3"></div>'
+		+ '</div>'
+
+		// Screen 0 — silent auto-detect
+		+ '<div class="screen active" id="s0">'
+		+ '<div class="center" style="padding:42px 0">'
+		+ '<div class="spin"></div>'
+		+ '<p style="margin-top:14px;color:#6b7280;font-size:12px">Checking your reading app&hellip;</p>'
+		+ '</div></div>'
+
+		// Screen 1 — Welcome
+		+ '<div class="screen" id="s1">'
 		+ '<div class="hd"><div class="ico">📖</div>'
-		+ '<h2>Set Up Your Reading App</h2>'
-		+ '<p>This is a one-time Google step. After this, you will only open your app link.</p></div>'
-		+ '<div class="note"><b>Google security note</b>'
-		+ '<span>If Google shows "This app isn\'t verified," click <b>Advanced</b> and continue. That warning is normal for personal Google Sheets tools.</span></div>'
-		+ '<a class="quick" href="' + scriptEditorUrl + '" target="_blank">Open Setup Page ↗</a>'
+		+ '<h2>Welcome! Let\'s get your reading app online</h2>'
+		+ '<p>This is a <b>one-time setup</b> &mdash; about 60 seconds, in 3 simple steps. We\'ll walk you through it, no tech skills needed.</p></div>'
+		+ '<button class="btn btn-primary" type="button" onclick="goto(2)">Let\'s do it &rarr;</button>'
+		+ '<button class="btn btn-link" type="button" onclick="goto(4)">I already have my link &middot; paste it</button>'
+		+ '</div>'
+
+		// Screen 2 — Open Apps Script
+		+ '<div class="screen" id="s2">'
+		+ '<div class="hd"><div class="ico">🔧</div>'
+		+ '<h2>Step 1 &middot; Open the Apps Script editor</h2>'
+		+ '<p>Click the purple button below. A new tab will open with Google\'s code editor &mdash; that\'s where your app lives. <b>Don\'t close this window</b> &mdash; come right back after the new tab opens.</p></div>'
+		// Use a real <button> + window.open instead of <a target="_blank">.
+		// Anchors inside an HtmlService modal route through Google\'s Drive URL
+		// gateway, which serves "Sorry, unable to open the file" for editor URLs.
+		+ '<button class="btn btn-primary" type="button" id="openEditorBtn" data-url="' + scriptEditorUrl + '">Open Apps Script &#8599;</button>'
+		+ '<div class="tip" style="margin-top:12px"><b>Pop-up blocked?</b> Click the lock or shield icon in your browser\'s address bar and choose <b>Allow pop-ups</b>, then click the button again.</div>'
+		+ '<div class="btn-row">'
+		+ '<button class="btn btn-secondary" type="button" onclick="goto(1)">&larr; Back</button>'
+		+ '<button class="btn btn-primary" type="button" onclick="goto(3)">Next &rarr;</button>'
+		+ '</div></div>'
+
+		// Screen 3 — Deploy instructions
+		+ '<div class="screen" id="s3">'
+		+ '<div class="hd"><div class="ico">🚀</div>'
+		+ '<h2>Step 2 &middot; Deploy your app</h2>'
+		+ '<p>Switch to the <b>Apps Script tab</b> you just opened, then do these 4 things:</p></div>'
+		+ '<div class="steps">'
 		+ '<div class="step"><div class="num">1</div><div>'
-		+ '<div class="st">Open the setup page</div>'
-		+ '<div class="sb">Use the button above. If needed, you can also open it from the Extensions menu.</div></div></div>'
+		+ '<div class="st">Click the blue <b>Deploy</b> button (top right)</div>'
+		+ '<div class="sb">Then choose <b>New deployment</b> from the dropdown.</div></div></div>'
 		+ '<div class="step"><div class="num">2</div><div>'
-		+ '<div class="st">Create your app link</div>'
-		+ '<div class="sb">Click <b>Deploy</b> &rarr; <b>New deployment</b>, then choose <b>Web app</b>.</div></div></div>'
+		+ '<div class="st">Click the <b>&#9881; gear</b> &middot; pick <b>Web app</b></div>'
+		+ '<div class="sb">A small form appears on the right.</div></div></div>'
 		+ '<div class="step"><div class="num">3</div><div>'
-		+ '<div class="st">Use these settings</div>'
-		+ '<div class="sb"><b>Execute as:</b> Me &nbsp;&bull;&nbsp; <b>Who has access:</b> Anyone</div></div></div>'
+		+ '<div class="st">Set <b>Execute as: Me</b> and <b>Who has access: Anyone</b></div>'
+		+ '<div class="sb">Don\'t worry &mdash; "Anyone" only means your app, not your sheet.</div></div></div>'
 		+ '<div class="step"><div class="num">4</div><div>'
-		+ '<div class="st">Finish setup, then come back here</div>'
-		+ '<div class="sb">Click <b>Deploy</b>, approve Google once, then return to this tab and press the button below.</div></div></div>'
-		+ '<button class="btn" id="doneBtn" onclick="checkUrl()">Find My App Link</button>'
-		+ '<input class="input" id="manualUrl" type="text" placeholder="If needed, paste your app link here" />'
-		+ '<button class="btn2" id="saveBtn" onclick="saveManualUrl()">Use Pasted Link</button>'
-		+ '<div class="sub">Your NYT badges may take about a minute to appear the first time while the bestseller cache warms up.</div>'
+		+ '<div class="st">Click <b>Deploy</b> &middot; approve Google</div>'
+		+ '<div class="sb">If you see <b>"unverified"</b>, click <b>Advanced</b> &rarr; <b>Go to (project) (unsafe)</b>. That\'s normal &mdash; it\'s your own app.</div></div></div>'
+		+ '</div>'
+		+ '<div class="tip"><b>✨ Important:</b> When Google shows the success dialog, you\'ll see a long link labelled <b>Web app URL</b>. <b>Click "Copy"</b> next to it, then come back here and click the button below.</div>'
+		+ '<div class="btn-row">'
+		+ '<button class="btn btn-secondary" type="button" onclick="goto(2)">&larr; Back</button>'
+		+ '<button class="btn btn-primary" type="button" onclick="goto(4)">I copied my link &rarr;</button>'
+		+ '</div></div>'
+
+		// Screen 4 — Paste URL
+		+ '<div class="screen" id="s4">'
+		+ '<div class="hd"><div class="ico">📋</div>'
+		+ '<h2>Step 3 &middot; Paste your link here</h2>'
+		+ '<p>Click in the box below, then press <b>Ctrl+V</b> (Windows) or <b>⌘+V</b> (Mac) to paste the link you just copied. Then click <b>Save</b>.</p></div>'
+		+ '<input class="input" id="manualUrl" type="text" placeholder="Paste your link here…" autocomplete="off" />'
+		+ '<button class="btn btn-primary" type="button" id="saveBtn" onclick="saveManualUrl()">Save &amp; open my app</button>'
+		+ '<div class="btn-row">'
+		+ '<button class="btn btn-secondary" type="button" onclick="goto(3)">&larr; Back to deploy steps</button>'
+		+ '</div>'
+		+ '<div class="tip" style="margin-top:14px"><b>Lost the link?</b> Go back to your Apps Script tab &middot; click <b>Deploy &rarr; Manage deployments</b> &middot; copy the <b>Web app URL</b> there. It starts with <b>https://script.google.com/macros/&hellip;</b> and ends with <b>/exec</b>.</div>'
+		+ '</div>'
+
+		// Screen 5 — Ready
+		+ '<div class="screen" id="s5">'
+		+ '<div class="center">'
+		+ '<div class="success-tick">&#127881;</div>'
+		+ '<div class="success-h">Your reading app is ready!</div>'
+		+ '<div class="success-p">Click below to open it, then <b>bookmark the new tab</b> so you can find it again any time.</div>'
+		+ '</div>'
+		// The chip itself is a clickable anchor — acts as a fallback when the
+		// browser blocks window.open() from inside the modal iframe. /exec URLs
+		// do NOT route through Drive's gateway, so target="_blank" is safe.
+		+ '<a id="okUrl" class="url-chip" target="_blank" rel="noopener" style="color:#1d4ed8;text-decoration:underline;cursor:pointer"></a>'
+		+ '<button class="btn btn-success" type="button" id="openBtn">Open my reading app &#8599;</button>'
+		+ '<div class="btn-row">'
+		+ '<button class="btn btn-secondary" type="button" id="copyBtn">Copy link</button>'
+		+ '</div>'
+		+ '<p style="text-align:center;margin-top:8px;color:#6b7280;font-size:10.5px">If the button doesn’t open a tab, click the blue link above.</p>'
+		+ '<p style="text-align:center;margin-top:6px;color:#9ca3af;font-size:10.5px">This link is yours forever &mdash; bookmark it!</p>'
+		+ '<p style="text-align:center;margin-top:4px"><a href="#" id="resetLink" style="color:#9ca3af;font-size:10.5px;text-decoration:underline">Wrong link? Set up again</a></p>'
+		+ '</div>'
+
 		+ '<div id="msg"></div>'
-		+ '<div class="ok" id="ok">'
-		+ '<div class="tick">\uD83C\uDF89</div>'
-		+ '<p>Your reading app is ready.</p>'
-		+ '<a id="appLink" href="#" target="_blank">Open My Reading App \u2197</a>'
-		+ '<small>Bookmark this link \u2014 it\'s yours forever.</small></div>'
+
 		+ '<script>'
-		+ 'function checkUrl(){'
-		+ 'var btn=document.getElementById("doneBtn");'
-		+ 'var saveBtn=document.getElementById("saveBtn");'
-		+ 'var msg=document.getElementById("msg");'
-		+ 'btn.disabled=true;saveBtn.disabled=true;msg.textContent="Checking\u2026";'
+		+ 'var _u=null;'
+		// Step navigation: 0=loading, 1=welcome, 2=open editor, 3=deploy, 4=paste, 5=ready
+		+ 'function goto(n){'
+		+ 'var screens=document.querySelectorAll(".screen");'
+		+ 'for(var i=0;i<screens.length;i++)screens[i].classList.remove("active");'
+		+ 'var el=document.getElementById("s"+n);if(el)el.classList.add("active");'
+		// Update progress dots: 1 active for welcome, 2 active for open/deploy, 3 active for paste/ready
+		+ 'var d1=document.getElementById("dot-1"),d2=document.getElementById("dot-2"),d3=document.getElementById("dot-3");'
+		+ 'd1.className="dot";d2.className="dot";d3.className="dot";'
+		+ 'if(n===1){d1.className="dot active";}'
+		+ 'else if(n===2){d1.className="dot done";d2.className="dot active";}'
+		+ 'else if(n===3){d1.className="dot done";d2.className="dot active";}'
+		+ 'else if(n===4){d1.className="dot done";d2.className="dot done";d3.className="dot active";}'
+		+ 'else if(n===5){d1.className="dot done";d2.className="dot done";d3.className="dot done";}'
+		+ 'showMsg("");'
+		+ '}'
+		+ 'function showMsg(txt,ok){'
+		+ 'var el=document.getElementById("msg");'
+		+ 'el.className=ok?"ok":"";el.textContent=txt||"";}'
+		// "I deployed it" → run auto-detect
+		+ 'function findLink(){'
+		+ 'showMsg("Finding your link\u2026");'
 		+ 'google.script.run'
-		+ '.withSuccessHandler(function(u){'
-		+ 'if(u){'
-		+ 'document.getElementById("appLink").href=u;'
-		+ 'var manual=document.getElementById("manualUrl");if(manual)manual.value=u;'
-		+ 'document.getElementById("ok").style.display="block";'
-		+ 'try{window.open(u,"_blank");}catch(e){}'
-		+ 'btn.style.display="none";msg.textContent="";'
-		+ '}else{'
-		+ 'msg.textContent="Not seeing your app yet. Finish the setup step in the Google tab, then try again.";'
-		+ 'btn.disabled=false;saveBtn.disabled=false;'
-		+ '}})'
-		+ '.withFailureHandler(function(){'
-		+ 'msg.textContent="Could not find your app link yet. Try again in a few seconds.";'
-		+ 'btn.disabled=false;saveBtn.disabled=false;})'
+		+ '.withSuccessHandler(function(url){'
+		+ 'if(url){showOk(url);}else{goto(4);showMsg("We couldn\'t find it automatically. Just paste it below.");}})'
+		+ '.withFailureHandler(function(){goto(4);showMsg("Couldn\'t connect. Paste your link below instead.");})'
 		+ '._checkDeployment();}'
+		// Show success state with confirmed URL. The chip is now an <a>, so
+		// also wire up its href so it works as a popup-blocker-proof fallback.
+		+ 'function showOk(url){'
+		+ '_u=url;'
+		+ 'goto(5);'
+		+ 'var chip=document.getElementById("okUrl");'
+		+ 'if(chip){chip.textContent=url;chip.setAttribute("href",url);}'
+		+ '}'
+		// Save manually pasted URL
 		+ 'function saveManualUrl(){'
-		+ 'var btn=document.getElementById("doneBtn");'
-		+ 'var saveBtn=document.getElementById("saveBtn");'
-		+ 'var msg=document.getElementById("msg");'
 		+ 'var val=(document.getElementById("manualUrl").value||"").trim();'
-		+ 'if(!val){msg.textContent="Paste your app link first.";return;}'
-		+ 'btn.disabled=true;saveBtn.disabled=true;msg.textContent="Saving link\u2026";'
+		+ 'if(!val){showMsg("Please paste your link first.");return;}'
+		+ 'if(val.indexOf("https://script.google.com")!==0){showMsg("That doesn\'t look right. Make sure it starts with https://script.google.com");return;}'
+		+ 'var btn=document.getElementById("saveBtn");'
+		+ 'btn.disabled=true;showMsg("Saving\u2026",true);'
 		+ 'google.script.run'
 		+ '.withSuccessHandler(function(saved){'
-		+ 'if(saved){'
-		+ 'document.getElementById("appLink").href=saved;'
-		+ 'document.getElementById("ok").style.display="block";'
-		+ 'msg.textContent="";'
-		+ 'try{window.open(saved,"_blank");}catch(e){}'
-		+ '}else{msg.textContent="That link does not look like a valid app link.";}'
-		+ 'btn.disabled=false;saveBtn.disabled=false;'
-		+ '})'
-		+ '.withFailureHandler(function(){msg.textContent="Could not save that link. Try again.";btn.disabled=false;saveBtn.disabled=false;})'
+		+ 'if(saved){showOk(saved);}'
+		+ 'else{showMsg("That link doesn\'t look like a valid web app URL. It should end with /exec");btn.disabled=false;}})'
+		+ '.withFailureHandler(function(){showMsg("Couldn\'t save. Try again.");btn.disabled=false;})'
 		+ '._saveManualWebAppUrl(val);}'
+		// Wire up the success-state buttons (only after they exist on screen 5)
+		+ 'document.getElementById("openBtn").addEventListener("click",function(){'
+		+ 'if(!_u)return;'
+		+ 'var w=window.open(_u,"_blank","noopener");'
+		+ 'if(!w)showMsg("Pop-up blocked. Use the Copy link button instead.");});'
+		+ 'document.getElementById("copyBtn").addEventListener("click",function(){'
+		+ 'if(!_u)return;'
+		+ 'try{navigator.clipboard.writeText(_u).then(function(){showMsg("Copied! Paste it into a new tab.",true);});}'
+		+ 'catch(e){var s=document.createElement("textarea");s.value=_u;document.body.appendChild(s);'
+		+ 's.select();document.execCommand("copy");document.body.removeChild(s);showMsg("Copied!",true);}});'
+		// Escape hatch: "Wrong link?" clears saved URL and restarts the wizard
+		+ 'document.getElementById("resetLink").addEventListener("click",function(e){'
+		+ 'e.preventDefault();showMsg("Clearing\u2026",true);'
+		+ 'google.script.run.withSuccessHandler(function(){_u=null;goto(1);showMsg("");}) ._clearSavedWebAppUrl();});'
+		// Friendly "open editor" affordance — open via window.open (sidesteps
+		// Google\'s Drive URL gateway) then auto-advance to the deploy step.
+		+ 'document.getElementById("openEditorBtn").addEventListener("click",function(){'
+		+ 'var u=this.getAttribute("data-url");'
+		+ 'var w=window.open(u,"_blank","noopener");'
+		+ 'if(!w){showMsg("Pop-up blocked. Please allow pop-ups, then click again.");return;}'
+		+ 'setTimeout(function(){goto(3);},800);});'
+		// On load: silently check if a doGet-confirmed URL already exists.
+		// _checkDeployment ONLY returns saved URLs (set by doGet self-register
+		// or wizard paste), never the unreliable ScriptApp.getService().getUrl(),
+		// so any URL we get back here is guaranteed to actually work.
+		+ 'google.script.run'
+		+ '.withSuccessHandler(function(url){if(url){showOk(url);}else{goto(1);}})'
+		+ '.withFailureHandler(function(){goto(1);})'
+		+ '._checkDeployment();'
 		+ '<\/script>'
-	).setWidth(440).setHeight(560);
+	).setWidth(460).setHeight(560);
 	SpreadsheetApp.getUi().showModalDialog(html, 'Set Up My Reading App');
 }
 
@@ -3169,19 +3414,27 @@ function _saveManualWebAppUrl(url) {
 	return val;
 }
 
+// Used by the wizard's "Wrong link? Set up again" affordance. Clears the
+// saved URL so the user can paste a fresh one.
+function _clearSavedWebAppUrl() {
+	try {
+		PropertiesService.getDocumentProperties().deleteProperty('WEB_APP_URL');
+	} catch (e) {}
+	return true;
+}
+
 function _checkDeployment() {
-	// Used by the setup wizard's "Find My App Link" button. doGet()
-	// auto-registers the live URL on every page load, so a saved URL is
-	// reliable. Falls back to ScriptApp.getService().getUrl() only if no
-	// page has been served yet (first-ever setup before any open).
-	var saved = _getWebAppUrl();
-	if (saved) return saved;
-	var auto = _getAutoDetectedWebAppUrl();
-	if (auto) {
-		try { PropertiesService.getDocumentProperties().setProperty('WEB_APP_URL', auto); } catch (e) {}
-		return auto;
-	}
-	return '';
+	// CONSERVATIVE: only return a URL we're confident in. The saved
+	// WEB_APP_URL on Document Properties is set by either:
+	//   (a) doGet() self-registering when a buyer visits the live /exec URL
+	//   (b) the buyer pasting their URL into the setup wizard
+	// Both confirm the URL actually works for THIS buyer.
+	//
+	// We deliberately do NOT trust ScriptApp.getService().getUrl() here:
+	// in container-bound scripts that API can return stale URLs of dead
+	// deployments, which then route through Drive's URL gateway and show
+	// "Sorry, unable to open the file at this time."
+	return _getWebAppUrl();
 }
 
 function _reStyleCurrentTheme() {
