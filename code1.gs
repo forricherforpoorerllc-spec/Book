@@ -2094,23 +2094,22 @@ function clientApplyThemeToSheet(themeName) {
 	// 48 (GOALS), 58 (FULL LIBRARY).
 	var myYear = ss.getSheetByName(SHEET_MYYEAR);
 	if (myYear) {
-		myYear.setTabColor(t.accent);
-		myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg);
-		try { myYear.getRange(2, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
-		try { myYear.getRange(4, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
-		[12, 16, 48, 58].forEach(function(hr) {
-			try {
-				// These rows are merged across cols 1-12 — paint the anchor cell
-				// (col 1) so the visible merged cell picks up the new colour.
-				myYear.getRange(hr, 1)
+		try {
+			myYear.setTabColor(t.accent);
+			myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg);
+			myYear.getRange(2, 7, 2, 6)
+				.setBackground(t.headerBg)
+				.setFontColor('#FFFFFF');
+			myYear.getRange(4, 7, 2, 6)
+				.setBackground(t.headerBg)
+				.setFontColor('#FFFFFF');
+			['A12:L12', 'A16:L16', 'A48:L48', 'A58:L58'].forEach(function(a1) {
+				myYear.getRange(a1)
 					.setBackground(t.headerBg)
 					.setFontColor(t.headerText || '#FFFFFF');
-				// Also paint the full row so unmerged variants still update
-				myYear.getRange(hr, 1, 1, 12)
-					.setBackground(t.headerBg)
-					.setFontColor(t.headerText || '#FFFFFF');
-			} catch (e) {}
-		});
+			});
+			SpreadsheetApp.flush();
+		} catch (e) {}
 	}
 	// Hidden utility sheets — update tab colour and banner row only
 	[
