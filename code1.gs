@@ -3354,8 +3354,7 @@ function _setupMyApp() {
 		// Wire up the success-state buttons (only after they exist on screen 5)
 		+ 'document.getElementById("openBtn").addEventListener("click",function(){'
 		+ 'if(!_u)return;'
-		+ 'var w=window.open(_u,"_blank","noopener");'
-		+ 'if(!w)showMsg("Pop-up blocked. Use the Copy link button instead.");});'
+		+ 'window.open(_u,"_blank","noopener");});'
 		+ 'document.getElementById("copyBtn").addEventListener("click",function(){'
 		+ 'if(!_u)return;'
 		+ 'try{navigator.clipboard.writeText(_u).then(function(){showMsg("Copied! Paste it into a new tab.",true);});}'
