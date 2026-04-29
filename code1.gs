@@ -2088,32 +2088,23 @@ function clientApplyThemeToSheet(themeName) {
 		// so the image persists automatically. Fetching + removing + re-inserting
 		// on every theme change risks wiping the image if the fetch fails.
 	}
-	// My Year sheet — fast repaint: banner rows 1-6 + 4 section header bars only.
+	// My Year sheet — fast repaint: banner rows 1-6 + 4 section header bars.
 	// KPI cards use a hardcoded fixed palette; charts use DIVERSE_PALETTE.
-	// Neither needs a rebuild — only the dark header bars carry the theme colour.
+	// Section header bars are at fixed rows: 12 (COVER WALL), 16 (ANALYTICS),
+	// 48 (GOALS), 58 (FULL LIBRARY).
 	var myYear = ss.getSheetByName(SHEET_MYYEAR);
 	if (myYear) {
 		myYear.setTabColor(t.accent);
 		myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg);
 		try { myYear.getRange(2, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
 		try { myYear.getRange(4, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
-		// Section header rows vary by cover count — find them by label text in col A
-		var MY_YEAR_HDRS = ['COVER WALL', 'ANALYTICS', 'GOALS', 'FULL LIBRARY'];
-		var myYearLastRow = Math.min(myYear.getLastRow(), 200);
-		if (myYearLastRow > 0) {
-			var myYearColA = myYear.getRange(1, 1, myYearLastRow, 1).getValues();
-			for (var mri = 0; mri < myYearColA.length; mri++) {
-				var mcv = String(myYearColA[mri][0]).trim();
-				for (var mli = 0; mli < MY_YEAR_HDRS.length; mli++) {
-					if (mcv.indexOf(MY_YEAR_HDRS[mli]) !== -1) {
-						myYear.getRange(mri + 1, 1, 1, 12)
-							.setBackground(t.headerBg)
-							.setFontColor(t.headerText || '#FFFFFF');
-						break;
-					}
-				}
-			}
-		}
+		[12, 16, 48, 58].forEach(function(hr) {
+			try {
+				myYear.getRange(hr, 1, 1, 12)
+					.setBackground(t.headerBg)
+					.setFontColor(t.headerText || '#FFFFFF');
+			} catch (e) {}
+		});
 	}
 	// Hidden utility sheets — update tab colour and banner row only
 	[
