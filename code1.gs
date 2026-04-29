@@ -2100,6 +2100,12 @@ function clientApplyThemeToSheet(themeName) {
 		try { myYear.getRange(4, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
 		[12, 16, 48, 58].forEach(function(hr) {
 			try {
+				// These rows are merged across cols 1-12 — paint the anchor cell
+				// (col 1) so the visible merged cell picks up the new colour.
+				myYear.getRange(hr, 1)
+					.setBackground(t.headerBg)
+					.setFontColor(t.headerText || '#FFFFFF');
+				// Also paint the full row so unmerged variants still update
 				myYear.getRange(hr, 1, 1, 12)
 					.setBackground(t.headerBg)
 					.setFontColor(t.headerText || '#FFFFFF');
