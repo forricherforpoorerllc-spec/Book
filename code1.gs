@@ -1214,6 +1214,11 @@ function doGet(e) {
 				if (dprops.getProperty('WEB_APP_URL') !== liveUrl) {
 					dprops.setProperty('WEB_APP_URL', liveUrl);
 				}
+				// Also persist to ScriptProperties as resilient backup
+				try {
+					var sp = PropertiesService.getScriptProperties();
+					if (sp.getProperty('WEB_APP_URL_BACKUP') !== liveUrl) sp.setProperty('WEB_APP_URL_BACKUP', liveUrl);
+				} catch (eSp) {}
 			}
 		}
 	} catch (eRegister) { /* never block page load on this */ }
@@ -2944,14 +2949,12 @@ function resetDemoData() {
 }
 
 function onOpen() {
-	// CRITICAL FIRST STEP: detect a fresh buyer copy and wipe seller-specific
-	// document state. When a buyer does File → Make a copy, the sheet's
-	// DocumentProperties (WEB_APP_URL, WELCOMED) travel with the copy — but
-	// the script's own ScriptProperties (SHEETS_INITIALIZED) do NOT. So if
-	// SHEETS_INITIALIZED is unset, this is a buyer's first open and the
-	// inherited URL points to the seller's deployment (which the buyer
-	// can't access). Wipe before the menu is built so the buyer sees
-	// "🚀 Set Up My App" and the wizard auto-pops.
+	// Buyer-copy detection: when a buyer does File → Make a copy, DocumentProperties
+	// (WEB_APP_URL, WELCOMED) travel with the copy — ScriptProperties do NOT.
+	// So if SHEETS_INITIALIZED is not set, this is the first open of a buyer copy.
+	// Wipe the inherited seller URL, then IMMEDIATELY set SHEETS_INITIALIZED so
+	// this wipe never runs again — not on the buyer's next open, not on the
+	// seller's own sheet if they somehow end up here.
 	try {
 		var sprops = PropertiesService.getScriptProperties();
 		if (sprops.getProperty('SHEETS_INITIALIZED') !== '1') {
@@ -2960,6 +2963,8 @@ function onOpen() {
 				dpWipe.deleteProperty('WEB_APP_URL');
 				dpWipe.deleteProperty('WELCOMED');
 			} catch (eWipe) {}
+			// Set immediately — never depend on the deferred trigger for this flag.
+			try { sprops.setProperty('SHEETS_INITIALIZED', '1'); } catch (eFlagSet) {}
 		}
 	} catch (eFirstOpen) {}
 
@@ -3404,10 +3409,23 @@ function _getWebAppUrl() {
 	// (which the buyer cannot access — hence the Drive "unable to open"
 	// error), or be null. The only reliable source is the URL the buyer
 	// pasted into the setup wizard, stored on document properties.
+	//
+	// ScriptProperties are checked as a fallback: they're per-script-project
+	// and never travel with a spreadsheet copy, so they're never wiped by
+	// the buyer-copy detection in onOpen — making them resilient to that wipe.
 	try {
 		var saved = PropertiesService.getDocumentProperties().getProperty('WEB_APP_URL') || '';
 		if (_isValidWebAppUrl(saved)) return saved;
 	} catch (eSaved) {}
+	// Fallback: ScriptProperties backup (survives buyer-copy DocProps wipe)
+	try {
+		var sprops = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL_BACKUP') || '';
+		if (_isValidWebAppUrl(sprops)) {
+			// Restore to DocProperties so we find it faster next time
+			try { PropertiesService.getDocumentProperties().setProperty('WEB_APP_URL', sprops); } catch (e) {}
+			return sprops;
+		}
+	} catch (eBackup) {}
 	return '';
 }
 
@@ -3435,6 +3453,10 @@ function _saveManualWebAppUrl(url) {
 	var val = String(url || '').trim();
 	if (!_isValidWebAppUrl(val)) return '';
 	try { PropertiesService.getDocumentProperties().setProperty('WEB_APP_URL', val); } catch (e) { return ''; }
+	// Also save to ScriptProperties as a persistent backup — this survives
+	// the buyer-copy DocProps wipe in onOpen, so the seller's own URL is
+	// never accidentally lost.
+	try { PropertiesService.getScriptProperties().setProperty('WEB_APP_URL_BACKUP', val); } catch (e) {}
 	return val;
 }
 
@@ -3443,6 +3465,9 @@ function _saveManualWebAppUrl(url) {
 function _clearSavedWebAppUrl() {
 	try {
 		PropertiesService.getDocumentProperties().deleteProperty('WEB_APP_URL');
+	} catch (e) {}
+	try {
+		PropertiesService.getScriptProperties().deleteProperty('WEB_APP_URL_BACKUP');
 	} catch (e) {}
 	return true;
 }
