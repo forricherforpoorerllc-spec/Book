@@ -295,9 +295,9 @@ function _dbLiteUpsertLibraryBannerImage(sheet) {
 				if (anchor && anchor.getRow() <= 6 && anchor.getColumn() <= 6) img.remove();
 			} catch (e) {}
 		});
-		var image = sheet.insertImage(blob, 1, 1, 14, 8);
-		image.setWidth(470);
-		image.setHeight(180);
+		var image = sheet.insertImage(blob, 1, 1, 0, 0);
+		image.setWidth(650);
+		image.setHeight(200);
 	} catch (e) {}
 }
 
