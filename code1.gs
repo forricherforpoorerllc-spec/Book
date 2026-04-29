@@ -3200,18 +3200,25 @@ function _setupMyApp() {
 		+ '</div>'
 
 		// Screen 2 — Open Apps Script
+		// Design: button + always-visible copyable link so popup-blocking is never
+		// an invisible failure. User confirms they opened it by clicking "I opened it".
 		+ '<div class="screen" id="s2">'
 		+ '<div class="hd"><div class="ico">🔧</div>'
 		+ '<h2>Step 1 &middot; Open the Apps Script editor</h2>'
-		+ '<p>Click the purple button below. A new tab will open with Google\'s code editor &mdash; that\'s where your app lives. <b>Don\'t close this window</b> &mdash; come right back after the new tab opens.</p></div>'
-		// Use a real <button> + window.open instead of <a target="_blank">.
-		// Anchors inside an HtmlService modal route through Google\'s Drive URL
-		// gateway, which serves "Sorry, unable to open the file" for editor URLs.
+		+ '<p>Click the button below to open Google\'s code editor in a new tab. <b>Keep this window open</b> &mdash; you\'ll come back here after.</p></div>'
 		+ '<button class="btn btn-primary" type="button" id="openEditorBtn" data-url="' + scriptEditorUrl + '">Open Apps Script &#8599;</button>'
-		+ '<div class="tip" id="popupHint" style="margin-top:12px;display:none"><b>Pop-up blocked?</b> Click the lock or shield icon in your browser\'s address bar and choose <b>Allow pop-ups</b>, then click the button again.</div>'
+		+ '<div style="margin:14px 0 4px;font-size:11.5px;color:#6b7280;text-align:center">Button not working? Open this link manually:</div>'
+		+ '<div style="display:flex;align-items:center;gap:6px;margin-bottom:16px;">'
+		+ '<input id="editorUrlInput" type="text" readonly value="' + scriptEditorUrl + '" '
+		+ 'style="flex:1;font-size:10.5px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;'
+		+ 'background:#f9fafb;color:#374151;font-family:monospace;cursor:text;" />'
+		+ '<button type="button" id="copyEditorUrlBtn" '
+		+ 'style="white-space:nowrap;padding:6px 12px;font-size:11px;font-weight:600;'
+		+ 'background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;">Copy</button>'
+		+ '</div>'
 		+ '<div class="btn-row">'
 		+ '<button class="btn btn-secondary" type="button" onclick="goto(1)">&larr; Back</button>'
-		+ '<button class="btn btn-primary" type="button" onclick="goto(3)">Next &rarr;</button>'
+		+ '<button class="btn btn-primary" type="button" onclick="goto(3)">I opened it &rarr;</button>'
 		+ '</div></div>'
 
 		// Screen 3 — Deploy instructions
@@ -3337,14 +3344,14 @@ function _setupMyApp() {
 		+ 'document.getElementById("resetLink").addEventListener("click",function(e){'
 		+ 'e.preventDefault();showMsg("Clearing\u2026",true);'
 		+ 'google.script.run.withSuccessHandler(function(){_u=null;goto(1);showMsg("");}) ._clearSavedWebAppUrl();});'
-		// Friendly "open editor" affordance — open via window.open (sidesteps
-		// Google\'s Drive URL gateway) then auto-advance to the deploy step.
+		// Open editor button — window.open sidesteps Google's Drive URL gateway.
+		// No return-value check; sandbox always returns null. User confirms via "I opened it".
 		+ 'document.getElementById("openEditorBtn").addEventListener("click",function(){'
-		+ 'var u=this.getAttribute("data-url");'
-		+ 'var w=window.open(u,"_blank","noopener");'
-		+ 'if(!w){document.getElementById("popupHint").style.display="";return;}'
-		+ 'document.getElementById("popupHint").style.display="none";'
-		+ 'setTimeout(function(){goto(3);},800);});'
+		+ 'window.open(this.getAttribute("data-url"),"_blank","noopener");});'
+		+ 'document.getElementById("copyEditorUrlBtn").addEventListener("click",function(){'
+		+ 'var inp=document.getElementById("editorUrlInput");'
+		+ 'try{navigator.clipboard.writeText(inp.value).then(function(){document.getElementById("copyEditorUrlBtn").textContent="Copied!";setTimeout(function(){document.getElementById("copyEditorUrlBtn").textContent="Copy";},2000);});}'
+		+ 'catch(e){inp.select();document.execCommand("copy");document.getElementById("copyEditorUrlBtn").textContent="Copied!";setTimeout(function(){document.getElementById("copyEditorUrlBtn").textContent="Copy";},2000);}});'
 		// On load: silently check if a doGet-confirmed URL already exists.
 		// _checkDeployment ONLY returns saved URLs (set by doGet self-register
 		// or wizard paste), never the unreliable ScriptApp.getService().getUrl(),
