@@ -3208,7 +3208,7 @@ function _setupMyApp() {
 		// Anchors inside an HtmlService modal route through Google\'s Drive URL
 		// gateway, which serves "Sorry, unable to open the file" for editor URLs.
 		+ '<button class="btn btn-primary" type="button" id="openEditorBtn" data-url="' + scriptEditorUrl + '">Open Apps Script &#8599;</button>'
-		+ '<div class="tip" style="margin-top:12px"><b>Pop-up blocked?</b> Click the lock or shield icon in your browser\'s address bar and choose <b>Allow pop-ups</b>, then click the button again.</div>'
+		+ '<div class="tip" id="popupHint" style="margin-top:12px;display:none"><b>Pop-up blocked?</b> Click the lock or shield icon in your browser\'s address bar and choose <b>Allow pop-ups</b>, then click the button again.</div>'
 		+ '<div class="btn-row">'
 		+ '<button class="btn btn-secondary" type="button" onclick="goto(1)">&larr; Back</button>'
 		+ '<button class="btn btn-primary" type="button" onclick="goto(3)">Next &rarr;</button>'
@@ -3342,7 +3342,8 @@ function _setupMyApp() {
 		+ 'document.getElementById("openEditorBtn").addEventListener("click",function(){'
 		+ 'var u=this.getAttribute("data-url");'
 		+ 'var w=window.open(u,"_blank","noopener");'
-		+ 'if(!w){showMsg("Pop-up blocked. Please allow pop-ups, then click again.");return;}'
+		+ 'if(!w){document.getElementById("popupHint").style.display="";return;}'
+		+ 'document.getElementById("popupHint").style.display="none";'
 		+ 'setTimeout(function(){goto(3);},800);});'
 		// On load: silently check if a doGet-confirmed URL already exists.
 		// _checkDeployment ONLY returns saved URLs (set by doGet self-register
