@@ -286,8 +286,9 @@ function _dbLiteUpsertLibraryBannerImage(sheet) {
 		}
 	}
 	if (!blob) return;
+	// Only remove the existing banner AFTER we have confirmed we have a blob to replace it with.
+	// This prevents a failed fetch from wiping the image with nothing to put back.
 	try {
-		// Remove only our previously-inserted banner (anchored in rows 1-6, cols 1-6).
 		var images = sheet.getImages();
 		images.forEach(function(img) {
 			try {
@@ -2077,8 +2078,10 @@ function clientApplyThemeToSheet(themeName) {
 		// The two text blocks that span cols G-L also carry the header bg colour
 		try { lib.getRange(2, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
 		try { lib.getRange(4, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
-		// Re-assert the banner image so it survives any background repaint
-		_dbLiteUpsertLibraryBannerImage(lib);
+		// NOTE: do NOT call _dbLiteUpsertLibraryBannerImage here.
+		// Floating images in Sheets are unaffected by cell background changes,
+		// so the image persists automatically. Fetching + removing + re-inserting
+		// on every theme change risks wiping the image if the fetch fails.
 	}
 	// My Year sheet — 6 banner rows, 12 columns (mirrors Library structure)
 	var myYear = ss.getSheetByName(SHEET_MYYEAR);
