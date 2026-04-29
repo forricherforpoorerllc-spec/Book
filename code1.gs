@@ -2098,30 +2098,15 @@ function clientApplyThemeToSheet(themeName) {
 		try { myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg); } catch (e) {}
 		try { myYear.getRange(2, 7, 2, 6).setBackground(t.headerBg).setFontColor('#FFFFFF'); } catch (e) {}
 		try { myYear.getRange(4, 7, 2, 6).setBackground(t.headerBg).setFontColor('#FFFFFF'); } catch (e) {}
-		var fullLibraryLabel = '   FULL LIBRARY';
-		try {
-			fullLibraryLabel = String(myYear.getRange(58, 1).getDisplayValue() || fullLibraryLabel);
-		} catch (e) {}
-		[
-			{ a1:'A12:L12', value:'   COVER WALL' },
-			{ a1:'A16:L16', value:'   ANALYTICS' },
-			{ a1:'A48:L48', value:'   GOALS  ·  CHALLENGES  ·  SHELVES' },
-			{ a1:'A58:L58', value:fullLibraryLabel }
-		].forEach(function(spec) {
-			try {
-				var headerRange = myYear.getRange(spec.a1);
-				try { headerRange.breakApart(); } catch (e2) {}
-				try { headerRange.merge(); } catch (e3) {}
-				headerRange
-					.setValue(spec.value)
-					.setBackground(t.headerBg)
-					.setFontColor(t.headerText || '#FFFFFF')
-					.setFontFamily('Montserrat')
-					.setFontSize(11)
-					.setFontWeight('bold')
-					.setHorizontalAlignment('left')
-					.setVerticalAlignment('middle');
-			} catch (e4) {}
+		// Section bars are merged A:L. Paint each underlying cell explicitly so
+		// neither the merge state nor a broken setValue chain can stop the
+		// background from being applied — and force a flush so the change shows
+		// immediately, not after the next sheet refresh.
+		[12, 16, 48, 58].forEach(function(r) {
+			for (var c = 1; c <= 12; c++) {
+				try { myYear.getRange(r, c).setBackground(t.headerBg); } catch (e) {}
+			}
+			try { myYear.getRange(r, 1).setFontColor(t.headerText || '#FFFFFF'); } catch (e) {}
 		});
 		SpreadsheetApp.flush();
 	}
