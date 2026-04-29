@@ -267,22 +267,27 @@ function _dbLiteArrangeTabs(ss) {
 }
 
 function _dbLiteUpsertLibraryBannerImage(sheet) {
-	// Banner is fully optional. The Library banner already renders beautifully
-	// without an image (themed background + large "Reading _ / LIBRARY _" text).
-	// Buyers can OPTIONALLY add their own banner by:
-	//   1. Uploading an image to their own Drive
-	//   2. Project Settings → Script Properties → add BANNER_IMAGE_FILE_ID = <the file id>
-	// If unset (the default), we skip image insertion entirely — no failure mode,
-	// no permissions issue, no silent image deletion.
 	if (!sheet) return;
-	var fileId = '';
-	try { fileId = PropertiesService.getScriptProperties().getProperty('BANNER_IMAGE_FILE_ID') || ''; } catch (e) {}
-	if (!fileId) return;
+	// Fetch the banner image from the CDN URL directly. This is persistent:
+	// every time the sheet is initialised or rebuilt, the image is re-inserted.
+	// Falls back to a Drive file if BANNER_IMAGE_FILE_ID is set (opt-in override).
+	var IMAGE_URL = 'https://wurf25iq8fx04dgl.public.blob.vercel-storage.com/Library.png';
 	var blob = null;
-	try { blob = DriveApp.getFileById(fileId).getBlob(); } catch (e) { return; }
+	try {
+		var resp = UrlFetchApp.fetch(IMAGE_URL, { muteHttpExceptions: true });
+		if (resp.getResponseCode() === 200) blob = resp.getBlob();
+	} catch (e) {}
+	// Optional Drive override
+	if (!blob) {
+		var fileId = '';
+		try { fileId = PropertiesService.getScriptProperties().getProperty('BANNER_IMAGE_FILE_ID') || ''; } catch (e) {}
+		if (fileId) {
+			try { blob = DriveApp.getFileById(fileId).getBlob(); } catch (e) {}
+		}
+	}
 	if (!blob) return;
 	try {
-		// Only remove OUR previously-inserted banner (anchored in rows 1-6, cols 1-6).
+		// Remove only our previously-inserted banner (anchored in rows 1-6, cols 1-6).
 		var images = sheet.getImages();
 		images.forEach(function(img) {
 			try {
@@ -2072,6 +2077,14 @@ function clientApplyThemeToSheet(themeName) {
 		// The two text blocks that span cols G-L also carry the header bg colour
 		try { lib.getRange(2, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
 		try { lib.getRange(4, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
+		// Re-assert the banner image so it survives any background repaint
+		_dbLiteUpsertLibraryBannerImage(lib);
+	}
+	// My Year sheet — 6 banner rows, 12 columns (mirrors Library structure)
+	var myYear = ss.getSheetByName(SHEET_MYYEAR);
+	if (myYear) {
+		myYear.setTabColor(t.accent);
+		try { myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg); } catch (e) {}
 	}
 	// Hidden utility sheets — update tab colour and banner row only
 	[
