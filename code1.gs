@@ -2088,28 +2088,33 @@ function clientApplyThemeToSheet(themeName) {
 		// so the image persists automatically. Fetching + removing + re-inserting
 		// on every theme change risks wiping the image if the fetch fails.
 	}
-	// My Year sheet — fast repaint: banner rows 1-6 + 4 section header bars.
-	// KPI cards use a hardcoded fixed palette; charts use DIVERSE_PALETTE.
-	// Section header bars are at fixed rows: 12 (COVER WALL), 16 (ANALYTICS),
-	// 48 (GOALS), 58 (FULL LIBRARY).
+	// My Year sheet — 6 banner rows, 12 columns (mirrors Library structure)
 	var myYear = ss.getSheetByName(SHEET_MYYEAR);
 	if (myYear) {
 		myYear.setTabColor(t.accent);
 		try { myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg); } catch (e) {}
-		try { myYear.getRange(2, 7, 2, 6).setBackground(t.headerBg).setFontColor('#FFFFFF'); } catch (e) {}
-		try { myYear.getRange(4, 7, 2, 6).setBackground(t.headerBg).setFontColor('#FFFFFF'); } catch (e) {}
-		// Merged cells don't repaint with setBackground alone — the merge holds the
-		// old colour in the display layer. Must breakApart → paint → merge to force
-		// an actual visual update. Do NOT call setValue — preserve existing content.
-		[12, 16, 48, 58].forEach(function(r) {
+		// Keep My Year section bars in sync with the active palette.
+		// These are merged A:L header bars (COVER WALL / ANALYTICS / GOALS / FULL LIBRARY).
+		var barRows = { 12: true, 18: true, 48: true, 58: true };
+		['COVER WALL', 'ANALYTICS', 'GOALS', 'FULL LIBRARY'].forEach(function(label) {
 			try {
-				var rng = myYear.getRange(r, 1, 1, 12);
-				rng.breakApart();
-				rng.setBackground(t.headerBg).setFontColor(t.headerText || '#FFFFFF');
-				rng.merge();
-			} catch (e) {}
+				var hits = myYear.createTextFinder(label).matchCase(false).findAll() || [];
+				hits.forEach(function(cell) {
+					if (cell) barRows[cell.getRow()] = true;
+				});
+			} catch (eFind) {}
 		});
-		SpreadsheetApp.flush();
+		Object.keys(barRows).forEach(function(r) {
+			var rowNum = Number(r);
+			if (!rowNum) return;
+			try { myYear.getRange(rowNum, 1, 1, 12).breakApart(); } catch (eBreak) {}
+			try {
+				myYear.getRange(rowNum, 1, 1, 12)
+					.setBackground(t.headerBg)
+					.setFontColor(t.headerText || '#FFFFFF');
+			} catch (ePaint) {}
+			try { myYear.getRange(rowNum, 1, 1, 12).merge(); } catch (eMerge) {}
+		});
 	}
 	// Hidden utility sheets — update tab colour and banner row only
 	[
