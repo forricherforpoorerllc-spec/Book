@@ -1073,6 +1073,15 @@ function _dbLiteInitMyYearSheet(ss, themeName) {
 		.setHorizontalAlignment('left').setVerticalAlignment('middle');
 	sheet.setRowHeight(FULL_HEADER, 32);
 
+	// Cache section bar rows so clientApplyThemeToSheet can repaint them
+	// instantly (without a full rebuild) when the user changes the theme.
+	try {
+		PropertiesService.getScriptProperties().setProperty(
+			'MY_YEAR_BAR_ROWS',
+			JSON.stringify([HERO_HEADER, ANALYTICS_HEADER, UTIL_HEADER, FULL_HEADER])
+		);
+	} catch (eCacheRows) {}
+
 	// Start the lower library wall after the hero selection so it feels like a
 	// broader catalog, not a repeated copy of the same first row of covers.
 	var fullBooks = coverBooks.length > heroCount
@@ -2066,57 +2075,66 @@ function clientSetSettings(settingsObj) {
 	} catch (e) {}
 }
 
-// Lightweight sheet palette sync — called from the webapp theme picker so the
-// Library header and hidden-tab colours update within a few seconds without
-// running the heavyweight full _dbLiteInitializeSheets() rebuild.
+// Lightweight sheet palette sync — called from the webapp theme picker.
+// Only repaints the cells that carry the theme colour (banner rows, section
+// bar rows, tab colours). No data rebuild, no chart recreation.
+// Section bar rows in My Year are dynamic (depend on book count), so their
+// row numbers are cached in Script Properties by _dbLiteInitMyYearSheet and
+// read back here.
 function clientApplyThemeToSheet(themeName) {
 	var valid = _validateTheme(themeName);
 	if (!valid) return;
 	var ss = _ss();
 	var t = _dbLiteTheme(valid);
-	// Library sheet — banner rows 1-6 + tab colour
+
+	// Persist theme to profile row so it survives refreshes and the parallel
+	// clientSetSetting call doesn't race against us.
+	try {
+		var profileSheet = ss.getSheetByName(SHEET_PROFILE);
+		if (profileSheet) {
+			var pRow = _getProfileDataRow(profileSheet);
+			var tCol = PROFILE_HEADERS.indexOf('Theme') + 1;
+			if (pRow >= 2 && tCol > 0) profileSheet.getRange(pRow, tCol).setValue(valid);
+		}
+	} catch (eSave) {}
+
+	// Library sheet — banner rows 1-6 + tab colour + text cell backgrounds
 	var lib = ss.getSheetByName(SHEET_LIBRARY);
 	if (lib) {
 		lib.setTabColor(t.accent);
 		var totalCols = LIBRARY_HEADERS.length + LIBRARY_DATA_COL - 1;
 		lib.getRange(1, 1, 6, totalCols).setBackground(t.headerBg);
-		// The two text blocks that span cols G-L also carry the header bg colour
 		try { lib.getRange(2, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
 		try { lib.getRange(4, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
-		// NOTE: do NOT call _dbLiteUpsertLibraryBannerImage here.
-		// Floating images in Sheets are unaffected by cell background changes,
-		// so the image persists automatically. Fetching + removing + re-inserting
-		// on every theme change risks wiping the image if the fetch fails.
 	}
-	// My Year sheet — 6 banner rows, 12 columns (mirrors Library structure)
+
+	// My Year sheet — banner rows 1-6 + cached section bar rows + tab colour
 	var myYear = ss.getSheetByName(SHEET_MYYEAR);
 	if (myYear) {
 		myYear.setTabColor(t.accent);
 		try { myYear.getRange(1, 1, 6, 12).setBackground(t.headerBg); } catch (e) {}
-		// Keep My Year section bars in sync with the active palette.
-		// These are merged A:L header bars (COVER WALL / ANALYTICS / GOALS / FULL LIBRARY).
-		var barRows = { 12: true, 18: true, 48: true, 58: true };
-		['COVER WALL', 'ANALYTICS', 'GOALS', 'FULL LIBRARY'].forEach(function(label) {
-			try {
-				var hits = myYear.createTextFinder(label).matchCase(false).findAll() || [];
-				hits.forEach(function(cell) {
-					if (cell) barRows[cell.getRow()] = true;
-				});
-			} catch (eFind) {}
-		});
-		Object.keys(barRows).forEach(function(r) {
-			var rowNum = Number(r);
+		try { myYear.getRange(2, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
+		try { myYear.getRange(4, 7, 2, 6).setBackground(t.headerBg); } catch (e) {}
+		// Read cached bar rows written by _dbLiteInitMyYearSheet.
+		// Fall back to reasonable defaults in case the cache is cold.
+		var barRows = [12, 18, 48, 58];
+		try {
+			var cached = PropertiesService.getScriptProperties().getProperty('MY_YEAR_BAR_ROWS');
+			if (cached) barRows = JSON.parse(cached);
+		} catch (eParse) {}
+		barRows.forEach(function(rowNum) {
 			if (!rowNum) return;
-			try { myYear.getRange(rowNum, 1, 1, 12).breakApart(); } catch (eBreak) {}
+			try { myYear.getRange(rowNum, 1, 1, 12).breakApart(); } catch (e) {}
 			try {
 				myYear.getRange(rowNum, 1, 1, 12)
 					.setBackground(t.headerBg)
 					.setFontColor(t.headerText || '#FFFFFF');
-			} catch (ePaint) {}
-			try { myYear.getRange(rowNum, 1, 1, 12).merge(); } catch (eMerge) {}
+			} catch (e) {}
+			try { myYear.getRange(rowNum, 1, 1, 12).merge(); } catch (e) {}
 		});
 	}
-	// Hidden utility sheets — update tab colour and banner row only
+
+	// Hidden utility sheets — tab colour + banner row 1 background
 	[
 		{ name: SHEET_CHALLENGES, count: CHALLENGE_HEADERS.length  },
 		{ name: SHEET_SHELVES,    count: SHELF_HEADERS.length      },
@@ -2127,7 +2145,9 @@ function clientApplyThemeToSheet(themeName) {
 		if (!s) return;
 		s.setTabColor(t.accent);
 		try { s.getRange(1, 1, 1, d.count).setBackground(t.headerBg); } catch (e) {}
+		try { s.getRange(1, 1, 1, d.count).setFontColor(t.headerText || '#FFFFFF'); } catch (e) {}
 	});
+
 	_bumpSyncVersionSafe();
 }
 
