@@ -3822,6 +3822,11 @@
     .hero-book.dragging {
       opacity:0.5;
     }
+    /* Insertion indicators for drag-to-reorder within the library */
+    .book-card.drag-insert-before { box-shadow: -4px 0 0 0 var(--primary-1); }
+    .book-card.drag-insert-after  { box-shadow:  4px 0 0 0 var(--primary-1); }
+    .book-list-item.drag-insert-before { box-shadow: 0 -3px 0 0 var(--primary-1); }
+    .book-list-item.drag-insert-after  { box-shadow: 0  3px 0 0 var(--primary-1); }
     @media (max-width:700px) {
       .book-drag-dock {
         width:min(96vw, 640px);
@@ -6790,6 +6795,15 @@
       activeShelf: null,
       yearlyGoal: 50,
       backendEnabled: false,
+      // Timestamp of last local mutation — used by initSyncPoll to skip
+      // server-side refreshes that come from our own actions (which would
+      // otherwise yank optimistic UI state).
+      _lastLocalActionAt: 0,
+      // Custom user-defined library order (array of book IDs). Populated by
+      // drag-to-reorder on the library tab. When sortBy === 'default' we
+      // honour this order; books not in the array fall through to natural
+      // (newest-first) order.
+      libraryOrder: [],
       preferences: {
         showSpoilers: false
       },
@@ -7086,13 +7100,27 @@
       const now = new Date();
       const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       const monthlyGoal = Math.round(state.yearlyGoal / 12) || 4;
+      // Find the earliest book month so we can show a forward-looking window
+      // (don't pad the chart with dead months from before the user existed).
+      let earliest = null;
+      allBooks.forEach(function(b) {
+        const ref = (b.status === 'finished' && b.dateFinished) ? b.dateFinished : b.dateAdded;
+        if (!ref) return;
+        const bd = new Date(ref);
+        if (isNaN(bd)) return;
+        if (!earliest || bd < earliest) earliest = bd;
+      });
+      const anchor = earliest
+        ? new Date(earliest.getFullYear(), earliest.getMonth(), 1)
+        : new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthsSinceAnchor = (now.getFullYear() - anchor.getFullYear()) * 12 + (now.getMonth() - anchor.getMonth());
+      const windowStartOffset = Math.max(0, monthsSinceAnchor - 5);
       const result = [];
-      for (let i = 5; i >= 0; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      for (let i = 0; i < 6; i++) {
+        const d = new Date(anchor.getFullYear(), anchor.getMonth() + windowStartOffset + i, 1);
         const yr = d.getFullYear();
         const mo = d.getMonth();
         const booksInMonth = allBooks.filter(b => {
-          // For finished books use dateFinished if set, otherwise fall back to dateAdded
           const ref = (b.status === 'finished' && b.dateFinished) ? b.dateFinished : b.dateAdded;
           if (!ref) return false;
           const bd = new Date(ref);
@@ -7189,6 +7217,11 @@
 
     function serverRun(method) {
       var args = Array.prototype.slice.call(arguments, 1);
+      // Stamp every mutating call so the sync poll skips its next refresh —
+      // otherwise our own version bump comes back as a "remote change" and
+      // yanks optimistic state.
+      var isMutation = typeof method === 'string' && method.indexOf('clientGet') !== 0;
+      if (isMutation) state._lastLocalActionAt = Date.now();
       return new Promise(function(resolve, reject) {
         if (!hasServerRuntime() || typeof google.script.run[method] !== 'function') {
           reject(new Error('Server method unavailable: ' + method));
@@ -9748,6 +9781,23 @@
 
     function renderProgressPanel() {
       const cs = computeStats();
+      // Fresh-start guard: don't show "X behind" or any progress shortfall
+      // when the user has no books yet — the goal hasn't started ticking.
+      if (allBooks.length === 0) {
+        const heroNumElEmpty = document.getElementById('progressHeroNum');
+        const heroBarElEmpty = document.getElementById('progressHeroBar');
+        const heroPctElEmpty = document.getElementById('progressHeroPct');
+        const heroBadgeElEmpty = document.getElementById('progressPaceBadge');
+        const statsElEmpty = document.getElementById('progressStatsRow');
+        const calloutElEmpty = document.getElementById('progressCallout');
+        if (heroNumElEmpty) heroNumElEmpty.textContent = '0 / ' + state.yearlyGoal;
+        if (heroBarElEmpty) heroBarElEmpty.style.width = '0%';
+        if (heroPctElEmpty) heroPctElEmpty.textContent = '0%';
+        if (heroBadgeElEmpty) { heroBadgeElEmpty.className = 'pace-status pace-on-track'; heroBadgeElEmpty.textContent = 'Ready to start'; }
+        if (statsElEmpty) statsElEmpty.innerHTML = '';
+        if (calloutElEmpty) calloutElEmpty.innerHTML = '<span class="callout-icon">📚</span><span>Add your first book to start tracking your reading goal.</span>';
+        return;
+      }
       const now = new Date();
       const start = new Date(now.getFullYear(), 0, 0);
       const dayOfYear = Math.floor((now - start) / 86400000);
@@ -11714,12 +11764,31 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
 
     function computeRhythmData() {
       const now = new Date();
+      // Anchor on the earliest book's week so a brand-new user doesn't see
+      // 12 weeks of pre-purchase zeros.
+      let earliest = null;
+      allBooks.forEach(function(b) {
+        const ref = b.dateAdded ? b.dateAdded.slice(0, 10) : null;
+        if (!ref) return;
+        const bd = new Date(ref);
+        if (isNaN(bd)) return;
+        if (!earliest || bd < earliest) earliest = bd;
+      });
+      function weekStartOf(d) {
+        const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        day.setDate(day.getDate() - day.getDay());
+        return day;
+      }
+      const anchor = weekStartOf(earliest || now);
+      const currentWeekStart = weekStartOf(now);
+      const weeksSinceAnchor = Math.round((currentWeekStart - anchor) / (7 * 86400000));
+      const windowStartOffset = Math.max(0, weeksSinceAnchor - 11);
       let rawWeeks = [];
-      for (let w = 11; w >= 0; w--) {
-        const weekEnd = new Date(now);
-        weekEnd.setDate(now.getDate() - w * 7);
-        const weekStart = new Date(weekEnd);
-        weekStart.setDate(weekEnd.getDate() - 6);
+      for (let i = 0; i < 12; i++) {
+        const weekStart = new Date(anchor);
+        weekStart.setDate(anchor.getDate() + (windowStartOffset + i) * 7);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
         const startStr = weekStart.toISOString().slice(0, 10);
         const endStr = weekEnd.toISOString().slice(0, 10);
         let booksAdded = 0, pages = 0, ratingSum = 0, ratedCount = 0;
@@ -12328,6 +12397,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       if (s) { try { state.challenges = JSON.parse(s); } catch(e2) {} }
       s = localStorage.getItem('pv_reading_order');
       if (s) { try { state.readingOrder = JSON.parse(s); } catch(e2) {} }
+      loadLibraryOrder();
       s = localStorage.getItem('pv_recentIds');
       if (s) { try { state.recentlyReadIds = JSON.parse(s); } catch(e2) {} }
       s = localStorage.getItem('pv_sortBy');
@@ -12807,7 +12877,22 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
 
     function sortBooks(books, sortKey) {
       const sort = sortKey !== undefined ? sortKey : state.sortBy;
-      if (sort === 'default') return books.slice();
+      if (sort === 'default') {
+        // Honour the user's custom drag-to-reorder order. Books listed in
+        // state.libraryOrder come first in that exact order; anything not
+        // listed (newly added books, books that haven't been reordered yet)
+        // appears after them in their existing array order.
+        if (!state.libraryOrder || !state.libraryOrder.length) return books.slice();
+        var orderIdx = {};
+        state.libraryOrder.forEach(function(id, i) { orderIdx[String(id)] = i; });
+        var ordered = [], rest = [];
+        books.forEach(function(b) {
+          if (orderIdx[String(b.id)] !== undefined) ordered.push(b);
+          else rest.push(b);
+        });
+        ordered.sort(function(a, b) { return orderIdx[String(a.id)] - orderIdx[String(b.id)]; });
+        return ordered.concat(rest);
+      }
       return [...books].sort((a, b) => {
         switch (sort) {
           case 'title-asc': return (a.title || '').localeCompare(b.title || '');
@@ -12820,6 +12905,20 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
           default: return 0;
         }
       });
+    }
+
+    // Persist user's custom library order to localStorage so it survives reloads.
+    // Stored per-product to keep variants isolated when a buyer owns more than one.
+    function saveLibraryOrder() {
+      try { localStorage.setItem('pv_p3_lib_order', JSON.stringify(state.libraryOrder || [])); } catch (e) {}
+    }
+    function loadLibraryOrder() {
+      try {
+        var raw = localStorage.getItem('pv_p3_lib_order');
+        if (!raw) return;
+        var arr = JSON.parse(raw);
+        if (Array.isArray(arr)) state.libraryOrder = arr.map(String);
+      } catch (e) {}
     }
 
     /* ===== TOAST SYSTEM ===== */
@@ -16130,8 +16229,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             'Are you sure you want to delete "' + (dBook ? dBook.title : 'this book') + '" from your library? This cannot be undone.',
             function() {
               if (dBook && dBook._serverBookId && hasServerRuntime()) {
+                state._lastLocalActionAt = Date.now();
                 serverRun('clientDeleteBook', dBook._serverBookId)
-                  .then(function() { return refreshFromServer(); })
                   .catch(function(err) { console.warn('Server delete failed:', err); showToast('Book removed locally. Could not sync to Sheet.', 'error'); });
               }
 
@@ -16213,8 +16312,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
               editBook.review = review; editBook.quotes = quotes;
 
               if (editBook._serverBookId && hasServerRuntime()) {
+                state._lastLocalActionAt = Date.now();
                 serverRun('clientUpdateBook', editBook._serverBookId, toServerBookPayload(editBook))
-                  .then(function() { return refreshFromServer(); })
                   .catch(function(err) { console.warn('Server update failed:', err); showToast('Book saved locally. Could not sync to Sheet.', 'error'); });
               }
             }
@@ -16231,6 +16330,7 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             };
             allBooks.unshift(newBook);
             if (hasServerRuntime()) {
+              state._lastLocalActionAt = Date.now();
               serverRun('clientAddBook', toServerBookPayload(newBook))
                 .then(function(res) {
                   if (res && res.BookId) {
@@ -16242,7 +16342,6 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
                     }
                     saveData();
                   }
-                  return refreshFromServer();
                 })
                 .catch(function(err) { console.warn('Server add failed:', err); showToast('Book saved locally. Could not sync to Sheet.', 'error'); });
             }
@@ -17631,6 +17730,25 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
             heroTarget.classList.add('drag-over');
           }
         }
+
+        // Library reorder: dragging a book card over another book card.
+        // Show an insertion indicator and allow drop. Only enabled when a
+        // library book is being dragged (not when dragging from elsewhere)
+        // and not over the source card itself.
+        if (state._bookDragId && state._bookDragSource === 'library') {
+          var overCard = e.target.closest('[data-drag-book-id]');
+          if (overCard && overCard.dataset.dragBookId !== state._bookDragId) {
+            e.preventDefault();
+            document.querySelectorAll('.book-card.drag-insert-before, .book-card.drag-insert-after, .book-list-item.drag-insert-before, .book-list-item.drag-insert-after').forEach(function(el) {
+              el.classList.remove('drag-insert-before', 'drag-insert-after');
+            });
+            // Decide before/after based on cursor position relative to card center
+            var rect = overCard.getBoundingClientRect();
+            var midX = rect.left + rect.width / 2;
+            var insertBefore = e.clientX < midX;
+            overCard.classList.add(insertBefore ? 'drag-insert-before' : 'drag-insert-after');
+          }
+        }
       });
 
       // Drag gate: only allow HTML5 drag after the pointer moves ≥8px from initial mousedown
@@ -17702,6 +17820,9 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
         document.querySelectorAll('.hero-book.dragging, .hero-book.drag-over, .book-card.dragging, .book-list-item.dragging').forEach(function(el) {
           el.classList.remove('dragging', 'drag-over');
         });
+        document.querySelectorAll('.book-card.drag-insert-before, .book-card.drag-insert-after, .book-list-item.drag-insert-before, .book-list-item.drag-insert-after').forEach(function(el) {
+          el.classList.remove('drag-insert-before', 'drag-insert-after');
+        });
         document.querySelectorAll('.drop-shelf-target.is-active-drop').forEach(function(el) { el.classList.remove('is-active-drop'); });
         document.querySelectorAll('.section-drop-zone.drag-hover').forEach(function(el) { el.classList.remove('drag-hover'); });
         document.body.classList.remove('is-dragging-book');
@@ -17741,6 +17862,63 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       });
 
       document.addEventListener('drop', function(e) {
+        // Library reorder drop — runs FIRST so a book dropped onto another
+        // book reorders rather than triggering an unrelated drop target
+        // that happens to wrap the card.
+        if (state._bookDragId && state._bookDragSource === 'library') {
+          var overCard = e.target.closest('[data-drag-book-id]');
+          if (overCard && overCard.dataset.dragBookId !== state._bookDragId) {
+            e.preventDefault();
+            var draggedId = String(state._bookDragId);
+            var targetId = String(overCard.dataset.dragBookId);
+            var rect = overCard.getBoundingClientRect();
+            var midX = rect.left + rect.width / 2;
+            var insertBefore = e.clientX < midX;
+            // Snap sort back to "default" so the user can actually see the
+            // reorder take effect (other sort modes ignore libraryOrder).
+            if (state.sortBy !== 'default') {
+              state.sortBy = 'default';
+              try { localStorage.setItem('pv_sortBy', 'default'); } catch (eSet) {}
+              if (hasServerRuntime()) {
+                serverRun('clientSaveUiPrefs', { sortBy: 'default' }).catch(function() {});
+              }
+              showToast('Sort changed to Custom so your order can show', 'info');
+            }
+            // Seed libraryOrder from the current visible order if it's empty
+            if (!state.libraryOrder.length) {
+              state.libraryOrder = allBooks.map(function(b) { return String(b.id); });
+            } else {
+              var present = {};
+              state.libraryOrder.forEach(function(id) { present[id] = true; });
+              allBooks.forEach(function(b) {
+                if (!present[String(b.id)]) state.libraryOrder.push(String(b.id));
+              });
+              var liveIds = {};
+              allBooks.forEach(function(b) { liveIds[String(b.id)] = true; });
+              state.libraryOrder = state.libraryOrder.filter(function(id) { return liveIds[id]; });
+            }
+            var fromIdx = state.libraryOrder.indexOf(draggedId);
+            if (fromIdx !== -1) state.libraryOrder.splice(fromIdx, 1);
+            var toIdx = state.libraryOrder.indexOf(targetId);
+            if (toIdx === -1) toIdx = state.libraryOrder.length;
+            if (!insertBefore) toIdx += 1;
+            state.libraryOrder.splice(toIdx, 0, draggedId);
+            saveLibraryOrder();
+            document.querySelectorAll('.book-card.drag-insert-before, .book-card.drag-insert-after, .book-list-item.drag-insert-before, .book-list-item.drag-insert-after').forEach(function(el) {
+              el.classList.remove('drag-insert-before', 'drag-insert-after');
+            });
+            setDragTargetActive(null);
+            showDragDock(false);
+            state._bookDragId = null;
+            state._bookDragIds = [];
+            state._bookDragSource = '';
+            renderLibrary();
+            if (state.fullLibraryOpen) renderFullLibraryModal();
+            hydrateIcons();
+            return;
+          }
+        }
+
         // Section drop zones (Currently Reading, Favorites, Delete strip)
         var sectionZone = e.target.closest('[data-drop-section]');
         if (sectionZone && state._bookDragId) {
@@ -18455,6 +18633,9 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       var _lastSyncVersion = -1;
       setInterval(function() {
         if (document.visibilityState !== 'visible') return;
+        // Skip the poll for 30s after any local action — our own server
+        // call bumps the version, and a refresh would yank optimistic state.
+        if (state._lastLocalActionAt && (Date.now() - state._lastLocalActionAt) < 30000) return;
         serverRun('clientGetSyncVersion')
           .then(function(version) {
             if (_lastSyncVersion < 0) {
@@ -18527,8 +18708,10 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       document.addEventListener('visibilitychange', function() {
         if (document.visibilityState !== 'visible') return;
 
-        // Always refresh from server when tab regains focus (catches sheet edits)
-        refreshFromServer();
+        // Don't auto-refresh on every focus — that wipes optimistic state and
+        // makes the UI feel like it's glitching every time the user tabs back.
+        // The 10s sync poll already catches sheet edits; the manual Sync button
+        // is available for explicit refreshes.
 
         var today = new Date().toISOString().slice(0, 10);
         if (today !== _lastRenderedDate) {
