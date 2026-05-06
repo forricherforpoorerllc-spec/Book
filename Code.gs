@@ -2503,7 +2503,7 @@ function _bookPayloadToRow(bookId, p) {
     _cap(p.Notes, 5000),
     _cap(p.Review, 5000),
     _cap(p.Quotes, 5000),
-    p.Favorite === true || p.Favorite === 'true',
+    (p.Favorite === true || p.Favorite === 'true') ? true : '',
     p.CoverEmoji || 'BK',
     _cap(p.CoverUrlPrimary || p.CoverUrl, 2000),
     _cap(p.Gradient1, 50),

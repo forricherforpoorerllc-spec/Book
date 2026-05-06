@@ -7099,8 +7099,8 @@
       const now = new Date();
       const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       const monthlyGoal = Math.round(state.yearlyGoal / 12) || 4;
-      // Find the earliest book month so we can show a forward-looking window
-      // (don't pad the chart with dead months from before the user existed).
+      // Find the earliest book month so we can show only the user's actual
+      // journey timeline (no pre-journey dead months, no future flatline tail).
       let earliest = null;
       allBooks.forEach(function(b) {
         const ref = (b.status === 'finished' && b.dateFinished) ? b.dateFinished : b.dateAdded;
@@ -7109,18 +7109,20 @@
         if (isNaN(bd)) return;
         if (!earliest || bd < earliest) earliest = bd;
       });
-      // Anchor: earliest book month if any, otherwise current month.
-      const anchor = earliest
+      const startMonth = earliest
         ? new Date(earliest.getFullYear(), earliest.getMonth(), 1)
         : new Date(now.getFullYear(), now.getMonth(), 1);
-      // Always show 6 cells starting at the anchor and stepping forward.
-      // If anchor + 5 months is before "now", advance the window so it ends
-      // at the current month — but never extend before the anchor (no dead months).
-      const monthsSinceAnchor = (now.getFullYear() - anchor.getFullYear()) * 12 + (now.getMonth() - anchor.getMonth());
-      const windowStartOffset = Math.max(0, monthsSinceAnchor - 5);
+      const endMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthPoints = [];
+      var cursor = new Date(startMonth);
+      while (cursor <= endMonth) {
+        monthPoints.push(new Date(cursor));
+        cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+      }
+      const windowPoints = monthPoints.length > 6 ? monthPoints.slice(monthPoints.length - 6) : monthPoints;
       const result = [];
-      for (let i = 0; i < 6; i++) {
-        const d = new Date(anchor.getFullYear(), anchor.getMonth() + windowStartOffset + i, 1);
+      for (let i = 0; i < windowPoints.length; i++) {
+        const d = windowPoints[i];
         const yr = d.getFullYear();
         const mo = d.getMonth();
         const booksInMonth = allBooks.filter(b => {
@@ -9700,14 +9702,17 @@
       const pct = Math.max(0, Math.min(100, state.yearlyGoal ? Math.round((cs.finishedThisYear / state.yearlyGoal) * 100) : 0));
       const now = new Date();
       const dayOfYear = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
-      const expected = Math.round((state.yearlyGoal * dayOfYear) / 365);
+      // Pace only starts after the first completed book. Until then, avoid
+      // showing users as "behind" before they have actually begun finishing.
+      const expected = cs.finishedThisYear > 0 ? Math.round((state.yearlyGoal * dayOfYear) / 365) : 0;
       const delta = cs.finishedThisYear - expected;
       const remaining = Math.max(0, state.yearlyGoal - cs.finishedThisYear);
       var paceClass, paceText;
       if (goalMet) { paceClass = 'pace-complete'; paceText = '🎉 Goal Met!'; }
+      else if (cs.finishedThisYear === 0) { paceClass = 'pace-on-track'; paceText = 'Start with first finish'; }
       else { paceClass = 'pace-on-track'; paceText = 'On Track'; }
-      if (!goalMet && delta >= 2) { paceClass = 'pace-ahead'; paceText = '+' + Math.round(delta) + ' ahead'; }
-      else if (!goalMet && delta <= -2) { paceClass = 'pace-behind'; paceText = Math.abs(Math.round(delta)) + ' behind'; }
+      if (!goalMet && cs.finishedThisYear > 0 && delta >= 2) { paceClass = 'pace-ahead'; paceText = '+' + Math.round(delta) + ' ahead'; }
+      else if (!goalMet && cs.finishedThisYear > 0 && delta <= -2) { paceClass = 'pace-behind'; paceText = Math.abs(Math.round(delta)) + ' behind'; }
 
       if (state.editingGoal) {
         const presets = [12, 24, 36, 52, 75, 100];
@@ -9815,12 +9820,14 @@
       const now = new Date();
       const start = new Date(now.getFullYear(), 0, 0);
       const dayOfYear = Math.floor((now - start) / 86400000);
-      const expected = (state.yearlyGoal * dayOfYear) / 365;
+      // Same onboarding rule as the goal card: no "behind" messaging until
+      // the user has completed at least one book.
+      const expected = cs.finishedThisYear > 0 ? (state.yearlyGoal * dayOfYear) / 365 : 0;
       const delta = cs.finishedThisYear - expected;
       let badgeClass = 'pace-on-track';
-      let badgeText = 'On Track';
-      if (delta >= 2) { badgeClass = 'pace-ahead'; badgeText = Math.round(delta) + ' ahead'; }
-      else if (delta <= -2) { badgeClass = 'pace-behind'; badgeText = Math.abs(Math.round(delta)) + ' behind'; }
+      let badgeText = cs.finishedThisYear > 0 ? 'On Track' : 'Start with first finish';
+      if (cs.finishedThisYear > 0 && delta >= 2) { badgeClass = 'pace-ahead'; badgeText = Math.round(delta) + ' ahead'; }
+      else if (cs.finishedThisYear > 0 && delta <= -2) { badgeClass = 'pace-behind'; badgeText = Math.abs(Math.round(delta)) + ' behind'; }
       const pct = Math.max(0, Math.min(100, state.yearlyGoal ? (cs.finishedThisYear / state.yearlyGoal) * 100 : 0));
       const monthlyData = computeMonthlyData();
       const avgPerMonth = monthlyData.length ? (monthlyData.reduce((s, m) => s + m.books, 0) / monthlyData.length).toFixed(1) : '—';
@@ -9844,7 +9851,11 @@
         ].map((s) => `<div class="insights-stat-cell"><div class="insights-stat-value">${s.value}</div><div class="insights-stat-label">${s.label}</div></div>`).join('');
       }
       if (calloutEl) {
-        calloutEl.innerHTML = `<span class="callout-icon">🏆</span><span>Best month so far: <strong>${bestMonth.month}</strong> with <strong>${bestMonth.books}</strong> books read</span>`;
+        if (cs.finishedThisYear === 0) {
+          calloutEl.innerHTML = '<span class="callout-icon">🌱</span><span>You\'re in setup mode. Finish your first book to activate pace tracking.</span>';
+        } else {
+          calloutEl.innerHTML = `<span class="callout-icon">🏆</span><span>Best month so far: <strong>${bestMonth.month}</strong> with <strong>${bestMonth.books}</strong> books read</span>`;
+        }
       }
     }
 
@@ -11776,8 +11787,8 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
     function computeRhythmData() {
       const now = new Date();
       // Anchor on the earliest book's week so a brand-new user doesn't see
-      // 12 weeks of pre-purchase zeros. Window slides forward as time passes,
-      // ending at the current week, but never starts before the first book.
+      // pre-purchase zeros. Also clamp the window to real elapsed weeks so
+      // we never draw future flatline zeros.
       let earliest = null;
       allBooks.forEach(function(b) {
         const ref = b.dateAdded ? b.dateAdded.slice(0, 10) : null;
@@ -11794,10 +11805,12 @@ The Hobbit,J.R.R. Tolkien,finished,5,310,Fantasy,2025-01-14"></textarea>
       }
       const anchor = weekStartOf(earliest || now);
       const currentWeekStart = weekStartOf(now);
-      const weeksSinceAnchor = Math.round((currentWeekStart - anchor) / (7 * 86400000));
-      const windowStartOffset = Math.max(0, weeksSinceAnchor - 11);
+      const elapsedWeeks = Math.max(0, Math.floor((currentWeekStart - anchor) / (7 * 86400000)));
+      const totalWeeks = elapsedWeeks + 1;
+      const windowWeeks = Math.max(1, Math.min(12, totalWeeks));
+      const windowStartOffset = Math.max(0, totalWeeks - windowWeeks);
       let rawWeeks = [];
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < windowWeeks; i++) {
         const weekStart = new Date(anchor);
         weekStart.setDate(anchor.getDate() + (windowStartOffset + i) * 7);
         const weekEnd = new Date(weekStart);

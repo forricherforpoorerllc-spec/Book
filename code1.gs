@@ -1863,7 +1863,7 @@ function _bookPayloadToRow(bookId, p) {
 		Number(p.PageCount || p.Pages) || 0,
 		p.DateStarted || '',
 		p.DateFinished || '',
-		p.Favorite === true || p.Favorite === 'true', // Favorite (visible)
+		(p.Favorite === true || p.Favorite === 'true') ? true : '', // Favorite (visible)
 		// Hidden columns below
 		p.SeriesOrder || p.SeriesNumber || '',         // SeriesNumber
 		bookId,
@@ -3028,6 +3028,7 @@ function onOpen() {
 		var ui = SpreadsheetApp.getUi();
 		ui.createMenu(_buildJourneyTitle())
 			.addItem('📖 Open My Reading App', '_smartOpenApp')
+			.addItem('🔗 Update Deployment Link', '_manageAppLink')
 			.addSeparator()
 			.addItem('🎨 Refresh Sheet Styling', '_reStyleCurrentTheme')
 			.addItem('🗑  Clear All Books & Data',  'clientClearDemoData')
@@ -3102,6 +3103,48 @@ function _smartOpenApp() {
 	_openWebApp();
 }
 
+function _manageAppLink() {
+	var current = _getWebAppUrl();
+	var html = HtmlService.createHtmlOutput(
+		'<style>'
+		+ 'body{font-family:"Google Sans",Arial,sans-serif;padding:18px;color:#1f2937;}'
+		+ '.title{font-size:18px;font-weight:800;margin:0 0 8px;}'
+		+ '.sub{font-size:13px;line-height:1.6;color:#4b5563;margin:0 0 14px;}'
+		+ '.input{width:100%;padding:11px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:12px;font-family:monospace;}'
+		+ '.row{display:flex;gap:8px;margin-top:12px;}'
+		+ '.btn{flex:1;padding:10px 12px;border-radius:8px;border:1px solid #d1d5db;background:#fff;color:#374151;font-weight:700;cursor:pointer;}'
+		+ '.btn.primary{background:#2563eb;border-color:#2563eb;color:#fff;}'
+		+ '.hint{font-size:11px;color:#6b7280;margin-top:10px;line-height:1.5;}'
+		+ '#msg{min-height:16px;font-size:12px;margin-top:10px;color:#dc2626;}'
+		+ '#msg.ok{color:#15803d;}'
+		+ '</style>'
+		+ '<div class="title">Update App Link</div>'
+		+ '<p class="sub">Paste your latest web app URL to replace the saved one for this sheet copy.</p>'
+		+ '<input id="appUrl" class="input" type="text" value="' + String(current || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '" placeholder="https://script.google.com/macros/s/.../exec" />'
+		+ '<div class="row">'
+		+ '<button class="btn" id="wizardBtn" type="button">Open Setup Wizard</button>'
+		+ '<button class="btn primary" id="saveBtn" type="button">Save Link</button>'
+		+ '</div>'
+		+ '<div class="hint">Tip: Use the URL ending in <b>/exec</b>. You can copy it from Deploy -> Manage deployments in Apps Script.</div>'
+		+ '<div id="msg"></div>'
+		+ '<script>'
+		+ 'function msg(t,ok){var el=document.getElementById("msg");el.className=ok?"ok":"";el.textContent=t||"";}'
+		+ 'document.getElementById("wizardBtn").addEventListener("click",function(){google.script.run._setupMyApp();google.script.host.close();});'
+		+ 'document.getElementById("saveBtn").addEventListener("click",function(){'
+		+ 'var val=(document.getElementById("appUrl").value||"").trim();'
+		+ 'if(!val){msg("Paste a web app URL first.");return;}'
+		+ 'msg("Saving...",true);'
+		+ 'google.script.run.withSuccessHandler(function(saved){'
+		+ 'if(!saved){msg("Invalid URL. It must look like https://script.google.com/macros/s/.../exec");return;}'
+		+ 'msg("Saved. Opening your app...",true);'
+		+ 'google.script.run.withSuccessHandler(function(){google.script.host.close();})._openWebApp();'
+		+ '}).withFailureHandler(function(){msg("Could not save the URL. Try again.");})._saveManualWebAppUrl(val);'
+		+ '});'
+		+ '<\/script>'
+	).setWidth(520).setHeight(280);
+	SpreadsheetApp.getUi().showModalDialog(html, 'Update App Link');
+}
+
 function _openWebApp() {
 	var url = _getWebAppUrl();
 	if (!url) { _setupMyApp(); return; }
@@ -3130,6 +3173,10 @@ function _openWebApp() {
 		+ 'style="margin-left:8px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;'
 		+ 'padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">'
 		+ 'Copy link</button>'
+		+ '<button id="editBtn" type="button" '
+		+ 'style="margin-left:8px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;'
+		+ 'padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">'
+		+ 'Update link</button>'
 		+ '<p id="hint" style="margin:12px 0 0;font-size:11px;color:#9ca3af;">Bookmark this link \u2014 it\'s yours forever</p>'
 		+ '<script>'
 		+ 'var _u=' + JSON.stringify(safeUrl) + ';'
@@ -3143,6 +3190,9 @@ function _openWebApp() {
 		+ '}catch(e){var s=document.createElement("textarea");s.value=_u;document.body.appendChild(s);s.select();'
 		+ 'document.execCommand("copy");document.body.removeChild(s);'
 		+ 'document.getElementById("hint").textContent="Copied!";}'
+		+ '});'
+		+ 'document.getElementById("editBtn").addEventListener("click",function(){'
+		+ 'google.script.run.withSuccessHandler(function(){google.script.host.close();})._manageAppLink();'
 		+ '});'
 		+ '<\/script>'
 		+ '</div>'
@@ -3159,8 +3209,6 @@ function _resetWebAppUrl() {
 }
 
 function _setupMyApp() {
-	var existingUrl = _getWebAppUrl();
-	if (existingUrl) { _openWebApp(); return; }
 	var scriptEditorUrl = _getScriptEditorUrl();
 
 	// ─────────────────────────────────────────────────────────────────────
